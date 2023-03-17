@@ -50,7 +50,9 @@ def create_equalizer(audio_data, frequency_bands, noise_threshold=0.1, channels=
         band_amplitudes = []
         for low_freq, high_freq in frequency_bands:
             band_filter = np.logical_and(freqs >= low_freq, freqs <= high_freq)
-            band_amplitude = np.mean(fft_values[band_filter])
+            # band_amplitude = np.mean(fft_values[band_filter])
+            # band_amplitude = np.max(fft_values[band_filter])  # Change this line to use np.max instead of np.mean
+            band_amplitude = np.mean(fft_values[band_filter]) * np.sum(band_filter)  # Multiply mean by the number of bins in the band
             band_amplitudes.append(band_amplitude)
 
         equalizer_data.append(band_amplitudes)
@@ -58,7 +60,8 @@ def create_equalizer(audio_data, frequency_bands, noise_threshold=0.1, channels=
     avg_band_amplitudes = np.mean(equalizer_data, axis=0)
     filtered_amplitudes = [amp if amp >= noise_threshold else 0 for amp in avg_band_amplitudes]
     max_amplitude = max(filtered_amplitudes)
-    normalized_amplitudes = [(amplitude / max_amplitude) if max_amplitude > 0 else 0
+    epsilon = 1e-12  # Add a small value to prevent division by very small numbers
+    normalized_amplitudes = [(amplitude / (max_amplitude + epsilon)) if max_amplitude > 0 else 0
                              for amplitude in filtered_amplitudes]
 
     return normalized_amplitudes
@@ -91,6 +94,7 @@ def show_equalizer(audio_queue, audio_thread, noise_threshold=0.1, channels=2, a
         current_amplitudes = [current_amplitude + animation_speed * (target_amplitude - current_amplitude)
                             for current_amplitude, target_amplitude in zip(current_amplitudes, amplitudes)]
         
+        #print('amplitudes: ', amplitudes, 'current_amplitudes: ', current_amplitudes)
         bars.setOpts(height=current_amplitudes)
         plot.update()
 
@@ -124,7 +128,7 @@ def main():
         audio_queue = queue.Queue(maxsize=MAX_QUEUE_SIZE)
         audio_thread = AudioCaptureThread(audio_queue, device=devices[device_index])
         audio_thread.start()
-        show_equalizer(audio_queue, audio_thread, noise_threshold=0.1, channels=2, animation_speed=0.50)
+        show_equalizer(audio_queue, audio_thread, noise_threshold=0.2, channels=2, animation_speed=0.50)
     except KeyboardInterrupt:  # Stop the program gracefully using Ctrl+C
         pass
 
