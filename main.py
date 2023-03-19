@@ -1,20 +1,12 @@
 import queue
-import signal
-import sys
 import numpy as np
 import scipy.fftpack as fft_pack
 import pyqtgraph as pg
 import soundcard as sc
-from PyQt5.QtWidgets import QApplication
-from PyQt5.QtGui import QSurfaceFormat
-
-#format = QSurfaceFormat()
-#format.setSwapInterval(1)
-#QSurfaceFormat.setDefaultFormat(format)
+import glfw
+from OpenGL.GL import *
 
 from audioCaptureThread import AudioCaptureThread
-from equalizer_window import CustomWindow
-from custom_pyqt_item import ColoredBarGraphItem
 
 FREQUENCY_BANDS = [
     (31.25, 62.5),
@@ -29,6 +21,7 @@ FREQUENCY_BANDS = [
 ]
 RATE = 44100
 MAX_QUEUE_SIZE = 200
+FRAME_RATE = 60
 
 
 def create_equalizer(audio_data, frequency_bands, noise_threshold=0.1, channels=2):
@@ -65,55 +58,76 @@ def create_equalizer(audio_data, frequency_bands, noise_threshold=0.1, channels=
 
     return normalized_amplitudes
 
-def show_equalizer(audio_queue, audio_thread, noise_threshold=0.1, channels=2, animation_speed=0.05):
-    app = QApplication([])
-    win = CustomWindow(audio_thread)
-    win.setWindowTitle('Real-time equalizer')
-    num_bands = len(FREQUENCY_BANDS)
+def draw_bars(amplitudes, bar_width, bar_spacing, window_width):
+    num_bars = len(amplitudes)
+    bar_total_width = bar_width + bar_spacing
+    total_bars_width = num_bars * bar_total_width - bar_spacing
+    offset_x = (window_width - total_bars_width) / 2
+
+    for i, amplitude in enumerate(amplitudes):
+        x = i * bar_total_width + bar_spacing / 2 + offset_x
+        y = 0
+
+        # Set color based on amplitude
+        if amplitude <= 0.5:
+            color = (0, 1, 0)  # Green
+        elif amplitude <= 0.8:
+            color = (1, 1, 0)  # Yellow
+        else:
+            color = (1, 0, 0)  # Red
+
+        glColor3f(*color)
+        glRectf(x, y, x + bar_width, y + amplitude * (600 / 2))
+
+
+def show_equalizer(audio_queue, audio_thread, noise_threshold=0.1, channels=2):
+    if not glfw.init():
+        return
+
+    window = glfw.create_window(800, 600, "Equalizer", None, None)
+    if not window:
+        glfw.terminate()
+        return
     
-    plot = win.addPlot(title="Equalizer")
-    plot.setLabels(left='Amplitude', bottom='Frequency Band (Hz)')
-    plot.setLimits(yMin=0, yMax=1)
-    plot.setYRange(0, 1)
-    plot.setAspectLocked(False)
-    plot.setXRange(-1, num_bands + 1)
-    plot.hideAxis('left')
-    #bars = pg.BarGraphItem(height=[0]*num_bands, x=range(num_bands), width=0.6)
-    bars = ColoredBarGraphItem(height=[0]*num_bands, x=range(num_bands), width=0.9)
-    plot.addItem(bars)
-    tick_labels = {i: f"{int(start)}-{int(end)}" for i, (start, end) in enumerate(FREQUENCY_BANDS)}
-    plot.getAxis('bottom').setTicks([tick_labels.items()])
+    audio_buffer = None
 
-    current_amplitudes = [0] * num_bands
+    glfw.make_context_current(window)
 
-    def update():
-        nonlocal current_amplitudes
-        audio_data = audio_queue.get()
-        amplitudes = create_equalizer(audio_data, FREQUENCY_BANDS, noise_threshold=noise_threshold, channels=channels)
-        current_amplitudes = [current_amplitude + animation_speed * (target_amplitude - current_amplitude)
-                            for current_amplitude, target_amplitude in zip(current_amplitudes, amplitudes)]
-        
-        #print('amplitudes: ', amplitudes, 'current_amplitudes: ', current_amplitudes)
-        bars.setOpts(height=current_amplitudes)
-        plot.update()
+    #glClearColor(0.8, 0.8, 0.8, 1)  # Light gray background
 
-    timer = pg.QtCore.QTimer()
-    timer.timeout.connect(update)
-    # Update every 15 milliseconds
-    timer.start(15)
+    glMatrixMode(GL_PROJECTION)
+    glLoadIdentity()
+    glOrtho(0, 800, 0, 600, -1, 1)
+    glMatrixMode(GL_MODELVIEW)
 
-    def signal_handler(signal, frame):
-        print("Stopping audio capture thread...")
-        audio_thread.stop()
-        audio_thread.join()
-        print("Exiting program...")
-        app.quit()
-        sys.exit(0)
+    frame_duration = 1 / FRAME_RATE
+    previous_time = glfw.get_time()
 
-    signal.signal(signal.SIGINT, signal_handler)
+    while not glfw.window_should_close(window):
+        current_time = glfw.get_time()
+        elapsed_time = current_time - previous_time
 
-    app.exec_()
-    sys.exit(0)
+        # Consume data from the queue and update the audio buffer
+        while not audio_queue.empty():
+            audio_buffer = audio_queue.get(block=False)
+
+        if elapsed_time >= frame_duration:
+            glClear(GL_COLOR_BUFFER_BIT)
+
+            if audio_buffer is not None:
+                amplitudes = create_equalizer(audio_buffer, FREQUENCY_BANDS, noise_threshold, channels)
+
+                # Render the bars
+                draw_bars(amplitudes, window_width=800, bar_width=20, bar_spacing=10)
+
+            glfw.swap_buffers(window)
+            previous_time = current_time
+
+        glfw.poll_events()
+
+    # Close the window and stop the audio thread
+    glfw.terminate()
+    audio_thread.stop()
 
 
 def main():
@@ -127,7 +141,8 @@ def main():
         audio_queue = queue.Queue(maxsize=MAX_QUEUE_SIZE)
         audio_thread = AudioCaptureThread(audio_queue, device=devices[device_index])
         audio_thread.start()
-        show_equalizer(audio_queue, audio_thread, noise_threshold=0.2, channels=2, animation_speed=0.50)
+
+        show_equalizer(audio_queue, audio_thread)
     except KeyboardInterrupt:  # Stop the program gracefully using Ctrl+C
         pass
 
