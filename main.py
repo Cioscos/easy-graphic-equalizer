@@ -1,7 +1,7 @@
 import queue
+import math
 import numpy as np
 import scipy.fftpack as fft_pack
-import pyqtgraph as pg
 import soundcard as sc
 import glfw
 from OpenGL.GL import *
@@ -58,19 +58,31 @@ def create_equalizer(audio_data, frequency_bands, noise_threshold=0.1, channels=
 
     return normalized_amplitudes
 
-def draw_bars(amplitudes, window_sizes):
+def draw_bars(amplitudes, window_sizes, previous_amplitudes, smooth_factor=0.1):
     window_width, window_height = window_sizes
     num_bars = len(amplitudes)
     total_bar_width = window_width / num_bars
     bar_width = total_bar_width * 0.8  # Each bar takes up 80% of its total width
     bar_spacing = total_bar_width * 0.2  # The remaining 20% is used for spacing between bars
 
+    # Calculate the number of bars that can fit within the new window size
+    max_bars = int(window_width / (bar_width + bar_spacing))
+
+    # Adjust the bar width and spacing accordingly
+    total_bar_width = window_width / max_bars
+    bar_width = total_bar_width * 0.8
+    bar_spacing = total_bar_width * 0.2
+
     for i, amplitude in enumerate(amplitudes):
+        # LERP between the previous amplitude and the new amplitude
+        interpolated_amplitude = previous_amplitudes[i] + smooth_factor * (amplitude - previous_amplitudes[i])
+        previous_amplitudes[i] = interpolated_amplitude  # Update the previous_amplitude
+
         x = i * total_bar_width + bar_spacing / 2
         y = 0
 
         # Calculate the total height of the bar based on the amplitude
-        total_height = amplitude * window_height
+        total_height = interpolated_amplitude * window_height
 
         # Calculate the heights of the three color sections based on the total height
         green_height = min(total_height, 0.5 * window_height)
@@ -88,7 +100,12 @@ def draw_bars(amplitudes, window_sizes):
         glColor3f(1, 0, 0)
         glRectf(x, y + green_height + yellow_height, x + bar_width, y + total_height)
 
-
+def update_projection(window_width, window_height):
+    glViewport(0, 0, window_width, window_height)
+    glMatrixMode(GL_PROJECTION)
+    glLoadIdentity()
+    glOrtho(0, window_width, 0, window_height, -1, 1)
+    glMatrixMode(GL_MODELVIEW)
 
 def calculate_bar_sizes(window_sizes, num_bars):
     window_width, _ = window_sizes
@@ -112,6 +129,9 @@ def show_equalizer(audio_queue, audio_thread, noise_threshold=0.1, channels=2):
     glfw.make_context_current(window)
     glfw.focus_window(window)
 
+    # Enable VSync
+    glfw.swap_interval(1)
+
     glMatrixMode(GL_PROJECTION)
     glLoadIdentity()
     glOrtho(0, 800, 0, 600, -1, 1)
@@ -119,6 +139,9 @@ def show_equalizer(audio_queue, audio_thread, noise_threshold=0.1, channels=2):
 
     frame_duration = 1 / FRAME_RATE
     previous_time = glfw.get_time()
+
+    # List of temporary amplitudes to create an animation effect
+    previous_amplitudes = [0] * len(FREQUENCY_BANDS)
 
     while not glfw.window_should_close(window):
         current_time = glfw.get_time()
@@ -133,10 +156,14 @@ def show_equalizer(audio_queue, audio_thread, noise_threshold=0.1, channels=2):
 
             if audio_buffer is not None:
                 window_sizes = glfw.get_window_size(window)
+                # Update the projection matrix and viewport
+                update_projection(*window_sizes)
                 amplitudes = create_equalizer(audio_buffer, FREQUENCY_BANDS, noise_threshold, channels)
-                print(amplitudes)
+
+                # exponential smoothing
+                smooth_factor = 1 - math.exp(-elapsed_time / (frame_duration * 2))
                 # Render the bars
-                draw_bars(amplitudes, window_sizes=window_sizes)
+                draw_bars(amplitudes, window_sizes, previous_amplitudes, smooth_factor=smooth_factor)
 
             glfw.swap_buffers(window)
             previous_time = current_time
