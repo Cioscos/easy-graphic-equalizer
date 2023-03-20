@@ -58,32 +58,50 @@ def create_equalizer(audio_data, frequency_bands, noise_threshold=0.1, channels=
 
     return normalized_amplitudes
 
-def draw_bars(amplitudes, bar_width, bar_spacing, window_width):
+def draw_bars(amplitudes, window_sizes):
+    window_width, window_height = window_sizes
     num_bars = len(amplitudes)
-    bar_total_width = bar_width + bar_spacing
-    total_bars_width = num_bars * bar_total_width - bar_spacing
-    offset_x = (window_width - total_bars_width) / 2
+    total_bar_width = window_width / num_bars
+    bar_width = total_bar_width * 0.8  # Each bar takes up 80% of its total width
+    bar_spacing = total_bar_width * 0.2  # The remaining 20% is used for spacing between bars
 
     for i, amplitude in enumerate(amplitudes):
-        x = i * bar_total_width + bar_spacing / 2 + offset_x
+        x = i * total_bar_width + bar_spacing / 2
         y = 0
 
-        # Set color based on amplitude
-        if amplitude <= 0.5:
-            color = (0, 1, 0)  # Green
-        elif amplitude <= 0.8:
-            color = (1, 1, 0)  # Yellow
-        else:
-            color = (1, 0, 0)  # Red
+        # Calculate the total height of the bar based on the amplitude
+        total_height = amplitude * window_height
 
-        glColor3f(*color)
-        glRectf(x, y, x + bar_width, y + amplitude * (600 / 2))
+        # Calculate the heights of the three color sections based on the total height
+        green_height = min(total_height, 0.5 * window_height)
+        yellow_height = min(max(total_height - green_height, 0), 0.3 * window_height)
 
+        # Draw green section
+        glColor3f(0, 1, 0)
+        glRectf(x, y, x + bar_width, y + green_height)
+
+        # Draw yellow section
+        glColor3f(1, 1, 0)
+        glRectf(x, y + green_height, x + bar_width, y + green_height + yellow_height)
+
+        # Draw red section
+        glColor3f(1, 0, 0)
+        glRectf(x, y + green_height + yellow_height, x + bar_width, y + total_height)
+
+
+
+def calculate_bar_sizes(window_sizes, num_bars):
+    window_width, _ = window_sizes
+    bar_total_width = window_width / num_bars
+    bar_spacing = bar_total_width * 0.2
+    bar_width = bar_total_width - bar_spacing
+    return bar_width, bar_spacing
 
 def show_equalizer(audio_queue, audio_thread, noise_threshold=0.1, channels=2):
     if not glfw.init():
         return
 
+    #video_mode = glfw.get_video_mode(glfw.get_primary_monitor())
     window = glfw.create_window(800, 600, "Equalizer", None, None)
     if not window:
         glfw.terminate()
@@ -92,8 +110,7 @@ def show_equalizer(audio_queue, audio_thread, noise_threshold=0.1, channels=2):
     audio_buffer = None
 
     glfw.make_context_current(window)
-
-    #glClearColor(0.8, 0.8, 0.8, 1)  # Light gray background
+    glfw.focus_window(window)
 
     glMatrixMode(GL_PROJECTION)
     glLoadIdentity()
@@ -115,10 +132,11 @@ def show_equalizer(audio_queue, audio_thread, noise_threshold=0.1, channels=2):
             glClear(GL_COLOR_BUFFER_BIT)
 
             if audio_buffer is not None:
+                window_sizes = glfw.get_window_size(window)
                 amplitudes = create_equalizer(audio_buffer, FREQUENCY_BANDS, noise_threshold, channels)
-
+                print(amplitudes)
                 # Render the bars
-                draw_bars(amplitudes, window_width=800, bar_width=20, bar_spacing=10)
+                draw_bars(amplitudes, window_sizes=window_sizes)
 
             glfw.swap_buffers(window)
             previous_time = current_time
