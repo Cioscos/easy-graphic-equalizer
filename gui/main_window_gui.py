@@ -115,7 +115,7 @@ def calculate_bar_sizes(window_sizes, num_bars):
     bar_width = bar_total_width - bar_spacing
     return bar_width, bar_spacing
 
-def show_equalizer(audio_queue, audio_thread, noise_threshold=0.1, channels=2):
+def show_equalizer(audio_queue, noise_threshold=0.1, channels=2):
     if not glfw.init():
         return
 
@@ -173,12 +173,12 @@ def show_equalizer(audio_queue, audio_thread, noise_threshold=0.1, channels=2):
 
     # Close the window and stop the audio thread
     glfw.terminate()
-    audio_thread.stop()
 
 
 class AudioCaptureGUI:
     def __init__(self):
         self.devices = sc.all_microphones(include_loopback=True)
+        self.last_device_selected = None
         
         # Create main window
         self.root = tk.Tk()
@@ -200,11 +200,6 @@ class AudioCaptureGUI:
         tk.Label(settings_frame, text="Settings").pack()
         self.noise_threshold = tk.DoubleVar(value=0.1)
         tk.Scale(settings_frame, from_=0, to=1, resolution=0.01, orient=tk.HORIZONTAL, label="Noise threshold", variable=self.noise_threshold).pack()
-        self.channels = tk.IntVar(value=2)
-        channels_frame = tk.LabelFrame(settings_frame, text="Channels")
-        channels_frame.pack()
-        tk.Radiobutton(channels_frame, text="Mono", variable=self.channels, value=1).pack(anchor="w")
-        tk.Radiobutton(channels_frame, text="Stereo", variable=self.channels, value=2).pack(anchor="w")
         
         # Create start button
         tk.Button(self.root, text="Start", command=self.start_capture).pack(side=tk.BOTTOM, padx=10, pady=10)
@@ -218,13 +213,18 @@ class AudioCaptureGUI:
         if selection:
             device_index = selection[0]
             device = self.devices[device_index]
-            self.audio_queue = queue.Queue(maxsize=MAX_QUEUE_SIZE)
-            self.audio_thread = AudioCaptureThread(self.audio_queue, device=device)
-            self.audio_thread.start()
+            
+            # Check if the device was already selected
+            if(self.last_device_selected != device):
+                self.audio_queue = queue.Queue(maxsize=MAX_QUEUE_SIZE)
+                self.audio_thread = AudioCaptureThread(self.audio_queue, device=device)
+                self.audio_thread.start()
+                self.last_device_selected = device
+                
     
     def start_capture(self):
         if self.audio_thread:
-            show_equalizer(self.audio_queue, self.audio_thread, self.noise_threshold.get(), self.channels.get())
+            show_equalizer(self.audio_queue, self.noise_threshold.get())
     
     def run(self):
         self.root.mainloop()
