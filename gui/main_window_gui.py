@@ -1,10 +1,9 @@
 import tkinter as tk
 import soundcard as sc
 import queue
-import soundcard as sc
 
 from thread.audioCaptureThread import AudioCaptureThread
-from thread.equalizer_thread import EqualizerThread
+from thread.equalizer_tkinter_thread import EqualizerTkinterThread
 
 MAX_QUEUE_SIZE = 200
 
@@ -34,6 +33,10 @@ class AudioCaptureGUI:
         tk.Label(settings_frame, text="Settings").pack()
         self.noise_threshold = tk.DoubleVar(value=0.1)
         tk.Scale(settings_frame, from_=0, to=1, resolution=0.01, orient=tk.HORIZONTAL, label="Noise threshold", variable=self.noise_threshold).pack()
+
+        # Create equalizer canvas
+        self.equalizer_canvas = tk.Canvas(settings_frame, width=800, height=600)
+        self.equalizer_canvas.pack(fill=tk.BOTH, expand=True)
         
         # Create start button
         tk.Button(self.root, text="Start", command=self.start_capture).pack(side=tk.BOTTOM, padx=10, pady=10)
@@ -61,7 +64,7 @@ class AudioCaptureGUI:
     def start_capture(self):
         if self.audio_thread and not self.opengl_thread:
             # Start the OpenGL window in a new thread
-            self.opengl_thread = EqualizerThread(self.audio_queue, self.noise_threshold.get())
+            self.opengl_thread = EqualizerTkinterThread(self.audio_queue, noise_threshold=self.noise_threshold.get(), canvas=self.equalizer_canvas)
             self.opengl_thread.start()
     
     def run(self):
