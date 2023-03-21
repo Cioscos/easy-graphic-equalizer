@@ -1,6 +1,5 @@
 import threading
 import queue
-from time import sleep
 import pyaudiowpatch as pyaudio
 
 # Audio parameters
