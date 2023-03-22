@@ -16,15 +16,17 @@ FREQUENCY_BANDS = [
     (8000, 16000)
 ]
 RATE = 44100
-FRAME_RATE = 60
+FRAME_RATE = 120
 
 class EqualizerTkinterThread(threading.Thread):
-    def __init__(self, audio_queue, noise_threshold=0.1, channels=2, canvas=None):
+    def __init__(self, audio_queue, noise_threshold=0.1, channels=2, canvas=None, control_queue=None):
         super().__init__()
         self.audio_queue = audio_queue
+        self.control_queue = control_queue
         self.noise_threshold = noise_threshold
         self.channels = channels
         self.canvas = canvas
+        self.bars = []
         self.stop_event = threading.Event()
 
     def run(self):
@@ -34,7 +36,19 @@ class EqualizerTkinterThread(threading.Thread):
         # List of temporary amplitudes to create an animation effect
         previous_amplitudes = [0] * len(FREQUENCY_BANDS)
 
+        # Initialize the rectangles for the first time
+        self.canvas.after_idle(self.init_bars)
+
+        # initialize audio buffer
+        audio_buffer = None
+
         while not self.stop_event.is_set():
+
+            # Process messages from the control queue
+            while not self.control_queue.empty():
+                message = self.control_queue.get(block=False)
+                self.process_control_message(message)
+            
             current_time = time.time()
             elapsed_time = current_time - previous_time
 
@@ -43,20 +57,33 @@ class EqualizerTkinterThread(threading.Thread):
                 audio_buffer = self.audio_queue.get(block=False)
 
             if elapsed_time >= frame_duration:
-                self.canvas.delete("all")  # Clear the canvas
 
                 if audio_buffer is not None:
                     amplitudes = self.create_equalizer(audio_buffer, FREQUENCY_BANDS, self.noise_threshold, self.channels)
 
                     # exponential smoothing
-                    smooth_factor = 1 - math.exp(-elapsed_time / (frame_duration * 2))
+                    smooth_factor = 1 - math.exp(-elapsed_time / (frame_duration * 5))
                     # Render the bars
                     self.draw_bars(amplitudes, self.canvas, previous_amplitudes, smooth_factor=smooth_factor)
 
                 previous_time = current_time
 
-            # Sleep for a short duration to reduce CPU usage
-            time.sleep(0.001)
+    def init_bars(self):
+        window_width = self.canvas.winfo_width()
+        window_height = self.canvas.winfo_height()
+        num_bars = len(FREQUENCY_BANDS)
+        total_bar_width = window_width / num_bars
+        bar_width = total_bar_width * 0.8
+        bar_spacing = total_bar_width * 0.2
+
+        for i in range(num_bars):
+            x = i * total_bar_width + bar_spacing / 2
+            y = window_height
+
+            green_bar = self.canvas.create_rectangle(x, y, x + bar_width, y, fill='green')
+            yellow_bar = self.canvas.create_rectangle(x, y, x + bar_width, y, fill='yellow')
+            red_bar = self.canvas.create_rectangle(x, y, x + bar_width, y, fill='red')
+            self.bars.append((green_bar, yellow_bar, red_bar))
 
     def create_equalizer(self, audio_data, frequency_bands, noise_threshold=0.1, channels=2):
         audio_samples = audio_data.T
@@ -97,13 +124,13 @@ class EqualizerTkinterThread(threading.Thread):
         window_height = canvas.winfo_height()
         num_bars = len(amplitudes)
         total_bar_width = window_width / num_bars
-        bar_width = total_bar_width * 0.8  # Each bar takes up 80% of its total width
-        bar_spacing = total_bar_width * 0.2  # The remaining 20% is used for spacing between bars
+        bar_width = total_bar_width * 0.8
+        bar_spacing = total_bar_width * 0.2
 
         for i, amplitude in enumerate(amplitudes):
             # LERP between the previous amplitude and the new amplitude
             interpolated_amplitude = previous_amplitudes[i] + smooth_factor * (amplitude - previous_amplitudes[i])
-            previous_amplitudes[i] = interpolated_amplitude  # Update the previous_amplitude
+            previous_amplitudes[i] = interpolated_amplitude
 
             x = i * total_bar_width + bar_spacing / 2
             y = window_height
@@ -115,14 +142,17 @@ class EqualizerTkinterThread(threading.Thread):
             green_height = min(total_height, 0.5 * window_height)
             yellow_height = min(max(total_height - green_height, 0), 0.3 * window_height)
 
-            # Draw green section
-            canvas.create_rectangle(x, y - green_height, x + bar_width, y, fill='green')
+            # Update the position and size of the green rectangle
+            green_bar = self.bars[i][0]
+            canvas.coords(green_bar, x, y - green_height, x + bar_width, y)
 
-            # Draw yellow section
-            canvas.create_rectangle(x, y - green_height - yellow_height, x + bar_width, y - green_height, fill='yellow')
+            # Update the position and size of the yellow rectangle
+            yellow_bar = self.bars[i][1]
+            canvas.coords(yellow_bar, x, y - green_height - yellow_height, x + bar_width, y - green_height)
 
-            # Draw red section
-            canvas.create_rectangle(x, y - total_height, x + bar_width, y - green_height - yellow_height, fill='red')
+            # Update the position and size of the red rectangle
+            red_bar = self.bars[i][2]
+            canvas.coords(red_bar, x, y - total_height, x + bar_width, y - green_height - yellow_height)
 
     def calculate_bar_sizes(self, window_sizes, num_bars):
         window_width, _ = window_sizes
@@ -130,6 +160,10 @@ class EqualizerTkinterThread(threading.Thread):
         bar_spacing = bar_total_width * 0.2
         bar_width = bar_total_width - bar_spacing
         return bar_width, bar_spacing
+    
+    def process_control_message(self, message):
+        if message["type"] == "set_noise_threshold":
+            self.noise_threshold = message["value"]
     
     def stop(self):
         # Stop the thread by breaking the main loop

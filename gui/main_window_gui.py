@@ -32,7 +32,15 @@ class AudioCaptureGUI:
         settings_frame.pack(side=tk.LEFT, padx=10, pady=10, fill=tk.BOTH, expand=True)
         tk.Label(settings_frame, text="Settings").pack()
         self.noise_threshold = tk.DoubleVar(value=0.1)
-        tk.Scale(settings_frame, from_=0, to=1, resolution=0.01, orient=tk.HORIZONTAL, label="Noise threshold", variable=self.noise_threshold).pack()
+        tk.Scale(settings_frame, 
+                 from_=0, 
+                 to=1, 
+                 resolution=0.01, 
+                 orient=tk.HORIZONTAL, 
+                 label="Noise threshold",
+                   variable=self.noise_threshold, 
+                   command=self.update_noise_threshold
+                ).pack()
 
         # Create equalizer canvas
         self.equalizer_canvas = tk.Canvas(settings_frame, width=800, height=600)
@@ -42,6 +50,7 @@ class AudioCaptureGUI:
         tk.Button(self.root, text="Start", command=self.start_capture).pack(side=tk.BOTTOM, padx=10, pady=10)
         
         self.audio_queue = None
+        self.equalizer_control_queue = queue.Queue()
         self.audio_thread = None
         self.opengl_thread = None
         self.last_device_selected = None
@@ -59,21 +68,43 @@ class AudioCaptureGUI:
                 self.audio_thread = AudioCaptureThread(self.audio_queue, device=device)
                 self.audio_thread.start()
                 self.last_device_selected = device
+
+    def update_noise_threshold(self, value):
+        if self.opengl_thread:
+            message = {
+                "type": "set_noise_threshold",
+                "value": float(value)
+            }
+            self.equalizer_control_queue.put(message)
                 
-    
     def start_capture(self):
         if self.audio_thread and not self.opengl_thread:
             # Start the OpenGL window in a new thread
-            self.opengl_thread = EqualizerTkinterThread(self.audio_queue, noise_threshold=self.noise_threshold.get(), canvas=self.equalizer_canvas)
+            self.opengl_thread = EqualizerTkinterThread(
+                self.audio_queue, 
+                noise_threshold=self.noise_threshold.get(), 
+                canvas=self.equalizer_canvas,
+                control_queue=self.equalizer_control_queue)
+            
             self.opengl_thread.start()
     
     def run(self):
         self.root.mainloop()
 
     def on_close(self):
+        if self.opengl_thread:
+            self.opengl_thread.stop()
+            while self.opengl_thread.is_alive():
+                self.opengl_thread.join(timeout=0.1)
+                # Update the GUI main loop to process events
+                # it avoid deadlock between the threads
+                self.root.update()
+
         # Stop the audio thread and close the window
         if self.audio_thread:
             self.audio_thread.stop()
-        if self.opengl_thread:
-            self.opengl_thread.stop()
+            while self.audio_thread.is_alive():
+                self.audio_thread.join(timeout=0.1)
+                self.root.update()
+
         self.root.destroy()
