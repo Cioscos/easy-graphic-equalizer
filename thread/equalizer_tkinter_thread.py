@@ -141,6 +141,7 @@ class EqualizerTkinterThread(threading.Thread):
             # Calculate the heights of the three color sections based on the total height
             green_height = min(total_height, 0.5 * window_height)
             yellow_height = min(max(total_height - green_height, 0), 0.3 * window_height)
+            red_height = max(total_height - green_height - yellow_height, 0)
 
             # Update the position and size of the green rectangle
             green_bar = self.bars[i][0]
@@ -150,9 +151,10 @@ class EqualizerTkinterThread(threading.Thread):
             yellow_bar = self.bars[i][1]
             canvas.coords(yellow_bar, x, y - green_height - yellow_height, x + bar_width, y - green_height)
 
-            # Update the position and size of the red rectangle
+            # Update the position and size of the red rectangle using the red_height value
             red_bar = self.bars[i][2]
-            canvas.coords(red_bar, x, y - total_height, x + bar_width, y - green_height - yellow_height)
+            canvas.coords(red_bar, x, y - green_height - yellow_height - red_height, x + bar_width, y - green_height - yellow_height)
+
 
     def calculate_bar_sizes(self, window_sizes, num_bars):
         window_width, _ = window_sizes
