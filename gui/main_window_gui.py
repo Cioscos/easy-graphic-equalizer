@@ -10,6 +10,9 @@ MAX_QUEUE_SIZE = 200
 
 
 class AudioCaptureGUI(ctk.CTk):
+    """
+    The main window which directly extends Ctk class
+    """
     def __init__(self):
         super().__init__()
 
@@ -61,6 +64,7 @@ class AudioCaptureGUI(ctk.CTk):
                  to=1,
                  orientation=ctk.HORIZONTAL,
                  variable=self.noise_threshold,
+                 command=self.update_noise_threshold
                  ).pack(side=ctk.LEFT, fill=ctk.X, expand=True)
         
         # Create right frame
@@ -72,8 +76,7 @@ class AudioCaptureGUI(ctk.CTk):
         equalizer_frame.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
         
         # Create equalizer canvas and put into equalizer_frame
-        self.equalizer_canvas = tk.Canvas(
-            equalizer_frame, bg="#333")
+        self.equalizer_canvas = ctk.CTkCanvas(equalizer_frame, bg="#333")
         self.equalizer_canvas.pack(fill=tk.BOTH, expand=True)
 
         # Create buttons frame and put into right frame
@@ -81,12 +84,20 @@ class AudioCaptureGUI(ctk.CTk):
         buttons_frame.pack(side=tk.BOTTOM, fill=tk.X)
 
         # Create start button
-        ctk.CTkButton(buttons_frame,
+        self.start_button = ctk.CTkButton(buttons_frame,
                   text="Start",
                   command=self.start_capture,
-                  font=("Roboto", 16)).pack(side=tk.BOTTOM, padx=10, pady=10, fill=tk.X)
-        
+                  font=("Roboto", 16),
+                  fg_color='green')
+        self.start_button.pack(side=tk.LEFT, padx=10, pady=10, fill=tk.X, expand=True)
+
         # Create stop button
+        self.stop_button = ctk.CTkButton(buttons_frame,
+                                         text='Stop',
+                                         font=("Roboto", 16),
+                                         fg_color='red',
+                                         command=self.stop_capture)
+        self.stop_button.pack(side=tk.RIGHT, padx=10, pady=10, fill=tk.X, expand=True)
 
         self.audio_queue = None
         self.equalizer_control_queue = queue.Queue()
@@ -94,7 +105,11 @@ class AudioCaptureGUI(ctk.CTk):
         self.opengl_thread = None
         self.last_device_selected = None
 
-    def on_device_selected(self, event):
+    def on_device_selected(self, _):
+        """
+        When a device from the listbox is choosen, it starts the audio_thread
+        and it says which devide the thread has to listen.
+        """
         # Start audio capture when a device is selected
         selection = self.device_listbox.curselection()
         if selection:
@@ -110,6 +125,13 @@ class AudioCaptureGUI(ctk.CTk):
                 self.last_device_selected = device
 
     def update_noise_threshold(self, value):
+        """
+        Update the noise threshold in the equalizer sending
+        a message to the EqualizerTkinterThread
+
+        Args:
+            value (ctk.DoubleVar):A DoubleVar object to trak the threshold value
+        """
         if self.opengl_thread:
             message = {
                 "type": "set_noise_threshold",
@@ -118,6 +140,9 @@ class AudioCaptureGUI(ctk.CTk):
             self.equalizer_control_queue.put(message)
 
     def start_capture(self):
+        """
+        Start the equalizer thread when the start button is pressed
+        """
         if self.audio_thread and not self.opengl_thread:
             # Start the OpenGL window in a new thread
             self.opengl_thread = EqualizerTkinterThread(
@@ -128,10 +153,27 @@ class AudioCaptureGUI(ctk.CTk):
 
             self.opengl_thread.start()
 
+    def stop_capture(self):
+        """
+        Check if the equalizer thread is running and if it is
+        grecefully stop it
+        """
+        if self.opengl_thread and self.opengl_thread.is_alive():
+            self.opengl_thread.stop()
+            self.opengl_thread = None
+
+
     def run(self):
+        """
+        Starts the tkinter main loop
+        """
         self.mainloop()
 
     def on_close(self):
+        """
+        Starts when the tkinter window is closed.
+        It gracefully stop all the started threads.
+        """
         if self.opengl_thread:
             self.opengl_thread.stop()
             while self.opengl_thread.is_alive():

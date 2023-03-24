@@ -170,3 +170,4 @@ class EqualizerTkinterThread(threading.Thread):
     def stop(self):
         # Stop the thread by breaking the main loop
         self.stop_event.set()
+        self.canvas.delete("all")
