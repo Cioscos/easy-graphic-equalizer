@@ -7,6 +7,7 @@ from thread.audioCaptureThread import AudioCaptureThread
 from thread.equalizer_tkinter_thread import EqualizerTkinterThread
 
 MAX_QUEUE_SIZE = 200
+SINGLE_LEFT_MOUSE_BOTTON_CLICK = '<Button-1>'
 
 
 class AudioCaptureGUI(ctk.CTk):
@@ -33,7 +34,7 @@ class AudioCaptureGUI(ctk.CTk):
 
         # Create device frame
         device_frame = ctk.CTkFrame(left_frame)
-        device_frame.pack(padx=10, pady=10, anchor='n')
+        device_frame.pack(padx=5, pady=5, anchor='n')
         ctk.CTkLabel(device_frame, text="Select device:", font=("Roboto", 14)).pack(pady=5)
 
         # Create the listbox frame
@@ -47,11 +48,11 @@ class AudioCaptureGUI(ctk.CTk):
         self.device_listbox.config(yscrollcommand=scrollbar.set)
         for i, device in enumerate(self.devices):
             self.device_listbox.insert(tk.END, f"{i}: {device}")
-        self.device_listbox.bind("<Double-Button-1>", self.on_device_selected)
+        self.device_listbox.bind(SINGLE_LEFT_MOUSE_BOTTON_CLICK, self.on_device_selected)
 
         # Create settings frame
         settings_frame = ctk.CTkFrame(left_frame, border_width=2)
-        settings_frame.pack(side=tk.BOTTOM, fill=tk.BOTH, expand=True, pady=10)
+        settings_frame.pack(side=tk.BOTTOM, fill=tk.BOTH, expand=True)
         ctk.CTkLabel(settings_frame, text="Settings", font=("Roboto", 18, "bold")).pack(side=tk.TOP)
         
         # Create scale widget
