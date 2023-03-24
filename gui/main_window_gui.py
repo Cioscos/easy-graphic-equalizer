@@ -1,7 +1,10 @@
+import queue
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
+
 import customtkinter as ctk
 import tkinter as tk
 import soundcard as sc
-import queue
 
 from thread.audioCaptureThread import AudioCaptureThread
 from thread.equalizer_tkinter_thread import EqualizerTkinterThread
@@ -20,7 +23,7 @@ class AudioCaptureGUI(ctk.CTk):
         ctk.set_appearance_mode('System')
         ctk.set_default_color_theme('blue')
 
-        self.devices = sc.all_microphones(include_loopback=True)
+        self.devices = []
 
         # Create main window title
         self.title("Audio Capture")
@@ -46,8 +49,10 @@ class AudioCaptureGUI(ctk.CTk):
         scrollbar = ctk.CTkScrollbar(device_listbox_frame, orientation="vertical", command=self.device_listbox.yview)
         scrollbar.pack(side=ctk.RIGHT, fill=ctk.Y)
         self.device_listbox.config(yscrollcommand=scrollbar.set)
-        for i, device in enumerate(self.devices):
-            self.device_listbox.insert(tk.END, f"{i}: {device}")
+        
+        # Start the coroutine to retrieve the devices list
+        asyncio.run(self.load_devices())
+
         self.device_listbox.bind(SINGLE_LEFT_MOUSE_BOTTON_CLICK, self.on_device_selected)
 
         # Create settings frame
@@ -105,6 +110,21 @@ class AudioCaptureGUI(ctk.CTk):
         self.audio_thread = None
         self.opengl_thread = None
         self.last_device_selected = None
+
+    async def get_devices(self):
+        with ThreadPoolExecutor() as executor:
+            loop = asyncio.get_event_loop()
+            devices = await loop.run_in_executor(executor, sc.all_microphones, True)
+        return devices
+    
+    async def load_devices(self):
+        self.devices = await self.get_devices()
+        for i, device in enumerate(self.devices):
+            self.device_listbox.insert(tk.END, f"{i}: {device}")
+
+    def update_devices_listbox(self):
+        for i, device in enumerate(self.devices):
+            self.device_listbox.insert(tk.END, f"{i}: {device['name']}")
 
     def on_device_selected(self, _):
         """
