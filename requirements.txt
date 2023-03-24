@@ -1,6 +1,5 @@
+wheel
 numpy
-Pillow
-PyAudioWPatch
 scipy
-PyQt5
-pyqtgraph
+SoundCard
+customtkinter
