@@ -1,5 +1,5 @@
+import customtkinter as ctk
 import tkinter as tk
-from tkinter import ttk
 import soundcard as sc
 import queue
 
@@ -9,81 +9,84 @@ from thread.equalizer_tkinter_thread import EqualizerTkinterThread
 MAX_QUEUE_SIZE = 200
 
 
-class AudioCaptureGUI:
+class AudioCaptureGUI(ctk.CTk):
     def __init__(self):
+        super().__init__()
+
+        ctk.set_appearance_mode('System')
+        ctk.set_default_color_theme('blue')
+
         self.devices = sc.all_microphones(include_loopback=True)
 
-        # Create main window
-        self.root = tk.Tk()
-        self.root.title("Audio Capture")
+        # Create main window title
+        self.title("Audio Capture")
+        self.minsize(800, 600)
 
-        self.root.protocol("WM_DELETE_WINDOW", self.on_close)
+        self.protocol("WM_DELETE_WINDOW", self.on_close)
 
         # create left frame
-        left_frame = tk.Frame(self.root, borderwidth=2, relief=tk.SUNKEN, bg="#f5f5f5")
-        left_frame.pack(side=tk.LEFT, padx=10, pady=10, fill=tk.Y)
-        # Create device listbox
-        device_frame = tk.Frame(left_frame, borderwidth=2, relief=tk.SUNKEN, bg="#f5f5f5")
-        #device_frame.place(relx=0, rely=0, relwidth=1, relheight=0.5)
+        left_frame = ctk.CTkFrame(self, border_width=2)
+        left_frame.pack(side=ctk.LEFT, padx=10, pady=10, fill=ctk.Y)
+
+        # Create device frame
+        device_frame = ctk.CTkFrame(left_frame)
         device_frame.pack(padx=10, pady=10, anchor='n')
-        tk.Label(device_frame, text="Select device:", font=("Roboto", 14), bg="#f5f5f5", fg="#333").pack(pady=5)
-        device_listbox_frame = tk.Frame(device_frame, bg="#f5f5f5")
-        device_listbox_frame.pack(fill=tk.BOTH, expand=True)
+        ctk.CTkLabel(device_frame, text="Select device:", font=("Roboto", 14)).pack(pady=5)
+
+        # Create the listbox frame
+        device_listbox_frame = ctk.CTkFrame(device_frame)
+        device_listbox_frame.pack(fill=ctk.BOTH, expand=True)
+
         self.device_listbox = tk.Listbox(device_listbox_frame, width=40, font=("Roboto", 12), bg="#fff", fg="#333")
         self.device_listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        scrollbar = ttk.Scrollbar(device_listbox_frame, orient="vertical", command=self.device_listbox.yview)
-        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        scrollbar = ctk.CTkScrollbar(device_listbox_frame, orientation="vertical", command=self.device_listbox.yview)
+        scrollbar.pack(side=ctk.RIGHT, fill=ctk.Y)
         self.device_listbox.config(yscrollcommand=scrollbar.set)
         for i, device in enumerate(self.devices):
             self.device_listbox.insert(tk.END, f"{i}: {device}")
         self.device_listbox.bind("<Double-Button-1>", self.on_device_selected)
 
         # Create settings frame
-        settings_frame = tk.Frame(left_frame, borderwidth=2, relief=tk.SUNKEN, bg="#f5f5f5")
+        settings_frame = ctk.CTkFrame(left_frame, border_width=2)
         settings_frame.pack(side=tk.BOTTOM, fill=tk.BOTH, expand=True, pady=10)
-        tk.Label(settings_frame, text="Settings", font=("Roboto", 18, "bold"), bg="#f5f5f5", fg="#333").pack(side=tk.TOP)
-        self.noise_threshold = tk.DoubleVar(value=0.1)
+        ctk.CTkLabel(settings_frame, text="Settings", font=("Roboto", 18, "bold")).pack(side=tk.TOP)
         
         # Create scale widget
-        scale_frame = tk.Frame(settings_frame)
+        self.noise_threshold = ctk.DoubleVar(value=0.1)
+        scale_frame = ctk.CTkFrame(settings_frame)
         scale_frame.pack(side=tk.TOP, padx=10, pady=10, fill=tk.X, expand=False)
-        tk.Label(scale_frame, text="Noise threshold:").pack(side=tk.LEFT, padx=(0, 10))
-        ttk.Style().configure("Custom.TScale", troughrelief=tk.RAISED, sliderrelief=tk.RAISED, borderwidth=0)
-        tk.Scale(scale_frame,
+        ctk.CTkLabel(scale_frame, text="Noise threshold:").pack(side=ctk.LEFT, padx=10)
+        ctk.CTkSlider(scale_frame,
                  from_=0,
                  to=1,
-                 resolution=0.01,
-                 orient=tk.HORIZONTAL,
+                 orientation=ctk.HORIZONTAL,
                  variable=self.noise_threshold,
-                 ).pack(side=tk.LEFT, fill=tk.X, expand=True)
+                 ).pack(side=ctk.LEFT, fill=ctk.X, expand=True)
         
         # Create right frame
-        right_frame = tk.Frame(self.root, borderwidth=2, relief=tk.SUNKEN, bg="#f5f5f5")
-        right_frame.pack(side=tk.RIGHT, padx=10, pady=10, fill=tk.BOTH, expand=True)
+        right_frame = ctk.CTkFrame(self, border_width=2)
+        right_frame.pack(side=ctk.RIGHT, padx=10, pady=10, fill=tk.BOTH, expand=True)
 
-        # Create equalizer frame
-        equalizer_frame = tk.Frame(right_frame, borderwidth=2, relief=tk.SUNKEN, bg="#f5f5f5")
+        # Create equalizer frame and put it into the right frame
+        equalizer_frame = ctk.CTkFrame(right_frame, border_width=2)
         equalizer_frame.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
         
-        # Create equalizer canvas
+        # Create equalizer canvas and put into equalizer_frame
         self.equalizer_canvas = tk.Canvas(
             equalizer_frame, bg="#333")
         self.equalizer_canvas.pack(fill=tk.BOTH, expand=True)
 
-        # Create buttons frame
-        buttons_frame = tk.Frame(right_frame, bg="#f5f5f5")
+        # Create buttons frame and put into right frame
+        buttons_frame = ctk.CTkFrame(right_frame)
         buttons_frame.pack(side=tk.BOTTOM, fill=tk.X)
 
         # Create start button
-        tk.Button(buttons_frame, 
-                  text="Start", 
-                  command=self.start_capture, 
-                  font=("Roboto", 16),
-                  bg="#4CAF50", 
-                  fg="#fff", 
-                  relief=tk.FLAT, 
-                  padx=20, 
-                  pady=10).pack(side=tk.BOTTOM, padx=10, pady=10, fill=tk.X)
+        ctk.CTkButton(buttons_frame,
+                  text="Start",
+                  command=self.start_capture,
+                  font=("Roboto", 16)).pack(side=tk.BOTTOM, padx=10, pady=10, fill=tk.X)
+        
+        # Create stop button
 
         self.audio_queue = None
         self.equalizer_control_queue = queue.Queue()
@@ -126,7 +129,7 @@ class AudioCaptureGUI:
             self.opengl_thread.start()
 
     def run(self):
-        self.root.mainloop()
+        self.mainloop()
 
     def on_close(self):
         if self.opengl_thread:
@@ -135,13 +138,13 @@ class AudioCaptureGUI:
                 self.opengl_thread.join(timeout=0.1)
                 # Update the GUI main loop to process events
                 # it avoid deadlock between the threads
-                self.root.update()
+                self.update()
 
         # Stop the audio thread and close the window
         if self.audio_thread:
             self.audio_thread.stop()
             while self.audio_thread.is_alive():
                 self.audio_thread.join(timeout=0.1)
-                self.root.update()
+                self.update()
 
-        self.root.destroy()
+        self.destroy()
