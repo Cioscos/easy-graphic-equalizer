@@ -9,6 +9,7 @@ import soundcard as sc
 from thread.audioCaptureThread import AudioCaptureThread
 from thread.equalizer_tkinter_thread import EqualizerTkinterThread
 from gui.slider_frame import SliderCustomFrame
+from gui.optionmenu_frame import OptionMenuCustomFrame
 
 MAX_QUEUE_SIZE = 200
 SINGLE_LEFT_MOUSE_BOTTON_CLICK = '<Button-1>'
@@ -68,7 +69,12 @@ class AudioCaptureGUI(ctk.CTk):
         self.slider_frame.pack(side=tk.TOP, padx=10, pady=10, fill=tk.X, expand=False)
         
         # Create the theme Option
-        #self.appearance_mode_label = ctk.CTkLabel(self.sidebar_frame, text="Appearance Mode:", anchor="w")
+        self.appearance_mode = OptionMenuCustomFrame(settings_frame,
+                                                     header_name='Appearance Mode:',
+                                                     values=["Light", "Dark", "System"],
+                                                     initial_value=ctk.get_appearance_mode(),
+                                                     command=self.change_appearance_mode_event)
+        self.appearance_mode.pack(side=tk.TOP, padx=10, pady=10, fill=tk.X, expand=False)
         
         # Create right frame
         right_frame = ctk.CTkFrame(self, border_width=2)
@@ -156,6 +162,12 @@ class AudioCaptureGUI(ctk.CTk):
                 "value": float(value)
             }
             self.equalizer_control_queue.put(message)
+
+    def change_appearance_mode_event(self, new_appearance_mode: str):
+        """
+        Change the tkinter theme
+        """
+        ctk.set_appearance_mode(new_appearance_mode)
 
     def start_capture(self):
         """

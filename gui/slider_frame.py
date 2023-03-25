@@ -4,7 +4,7 @@ import customtkinter as tk
 
 class SliderCustomFrame(tk.CTkFrame):
     """
-    Custom class to wrap the customtkinter CTkFrame class
+    Custom class to wrap an Slider inside a frame
     """
     def __init__(self,
                  *args,
