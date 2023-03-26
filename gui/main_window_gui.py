@@ -33,6 +33,7 @@ class AudioCaptureGUI(ctk.CTk):
 
         #Initialize the canvas size to none
         self.canvas_width = self.canvas_height = None
+        self.bg_alpha = 0.5
 
         # Create the resource manager
         self.resource_manager = ResourceManager()
@@ -99,6 +100,7 @@ class AudioCaptureGUI(ctk.CTk):
 
         # load canvas bg image
         self.bg_img = Image.open(self.resource_manager.get_image_path('glass.jpg', 'bg'))
+        self.bg_img.putalpha(int(255 * self.bg_alpha))
 
         # Chech image size to understand if it must be resized
         self.canvas_width, self.canvas_height = self.get_canvas_size()
@@ -239,6 +241,7 @@ class AudioCaptureGUI(ctk.CTk):
                 if self.canvas_height > self.bg_img.height or self.canvas_width > self.bg_img.width:
                     # Resize the image using the resize() method
                     self.bg_img = self.bg_img.resize((self.canvas_width, self.canvas_height), Image.ANTIALIAS)
+                    self.bg_img.putalpha(int(255 * self.bg_alpha))
 
                     self.canvas_image = ImageTk.PhotoImage(self.bg_img)
                     self.equalizer_canvas.create_image(0, 0, anchor=ctk.NW, image=self.canvas_image)
