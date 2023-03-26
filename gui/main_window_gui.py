@@ -15,6 +15,8 @@ from resource_manager import ResourceManager
 
 MAX_QUEUE_SIZE = 200
 SINGLE_LEFT_MOUSE_BOTTON_CLICK = '<Button-1>'
+CLOSE_WINDOW_EVENT = 'WM_DELETE_WINDOW'
+CONFIGURE_EVENT = '<Configure>'
 
 
 class AudioCaptureGUI(ctk.CTk):
@@ -29,6 +31,9 @@ class AudioCaptureGUI(ctk.CTk):
 
         self.devices = []
 
+        #Initialize the canvas size to none
+        self.canvas_width = self.canvas_height = None
+
         # Create the resource manager
         self.resource_manager = ResourceManager()
 
@@ -36,7 +41,7 @@ class AudioCaptureGUI(ctk.CTk):
         self.title("Audio Capture")
         self.minsize(800, 600)
 
-        self.protocol("WM_DELETE_WINDOW", self.on_close)
+        self.protocol(CLOSE_WINDOW_EVENT, self.on_close)
 
         # create left frame
         left_frame = ctk.CTkFrame(self, border_width=2)
@@ -92,8 +97,17 @@ class AudioCaptureGUI(ctk.CTk):
         # Create equalizer canvas and put into equalizer_frame
         self.equalizer_canvas = ctk.CTkCanvas(equalizer_frame, bg="#333")
 
-        # load image in canvas
-        self.canvas_image = ImageTk.PhotoImage(Image.open(self.resource_manager.get_image_path('glass.jpg', 'bg')))
+        # load canvas bg image
+        self.bg_img = Image.open(self.resource_manager.get_image_path('glass.jpg', 'bg'))
+
+        # Chech image size to understand if it must be resized
+        self.canvas_width, self.canvas_height = self.get_canvas_size()
+
+        if self.canvas_height > self.bg_img.height or self.canvas_width > self.bg_img.width:
+            # Resize the image using the resize() method
+            self.bg_img = self.bg_img.resize((self.canvas_width, self.canvas_height), Image.ANTIALIAS)
+
+        self.canvas_image = ImageTk.PhotoImage(self.bg_img)
 
         self.equalizer_canvas.create_image(0, 0, anchor=tk.NW, image=self.canvas_image)
         self.equalizer_canvas.pack(fill=tk.BOTH, expand=True)
@@ -118,11 +132,26 @@ class AudioCaptureGUI(ctk.CTk):
                                          command=self.stop_capture)
         self.stop_button.pack(side=tk.RIGHT, padx=10, pady=10, fill=tk.X, expand=True)
 
+        # BIND THE EVENT
+        # Create a dictionary with all the widget to check in the on_resize callback
+        on_resize_widget = {'equalizer_canvas': self.equalizer_canvas}
+
+        self.bind(CONFIGURE_EVENT, lambda event: self.on_resize(event, on_resize_widget))
+
         self.audio_queue = None
         self.equalizer_control_queue = queue.Queue()
         self.audio_thread = None
         self.opengl_thread = None
         self.last_device_selected = None
+
+    def get_canvas_size(self) -> tuple[int, int]:
+        """
+        Return the size of the equalizer_canvas
+
+        Returns:
+            tuple: width and height of the canvas
+        """
+        return (self.equalizer_canvas.winfo_width(), self.equalizer_canvas.winfo_height())
 
     async def get_devices(self):
         with ThreadPoolExecutor() as executor:
@@ -202,6 +231,17 @@ class AudioCaptureGUI(ctk.CTk):
             self.opengl_thread.stop()
             self.opengl_thread = None
 
+    def on_resize(self, _, widgets: dict[str, ctk.CTkBaseClass]):
+        for widget_name, widget in widgets.items():
+            widget.update_idletasks()
+            if widget_name == 'equalizer_canvas':
+                self.canvas_width, self.canvas_height = widget.winfo_width(), widget.winfo_height()
+                if self.canvas_height > self.bg_img.height or self.canvas_width > self.bg_img.width:
+                    # Resize the image using the resize() method
+                    self.bg_img = self.bg_img.resize((self.canvas_width, self.canvas_height), Image.ANTIALIAS)
+
+                    self.canvas_image = ImageTk.PhotoImage(self.bg_img)
+                    self.equalizer_canvas.create_image(0, 0, anchor=ctk.NW, image=self.canvas_image)
 
     def run(self):
         """
