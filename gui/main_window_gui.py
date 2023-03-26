@@ -5,9 +5,13 @@ from concurrent.futures import ThreadPoolExecutor
 import customtkinter as ctk
 import tkinter as tk
 import soundcard as sc
+from PIL import Image, ImageTk
 
 from thread.audioCaptureThread import AudioCaptureThread
 from thread.equalizer_tkinter_thread import EqualizerTkinterThread
+from gui.slider_frame import SliderCustomFrame
+from gui.optionmenu_frame import OptionMenuCustomFrame
+from resource_manager import ResourceManager
 
 MAX_QUEUE_SIZE = 200
 SINGLE_LEFT_MOUSE_BOTTON_CLICK = '<Button-1>'
@@ -24,6 +28,9 @@ class AudioCaptureGUI(ctk.CTk):
         ctk.set_default_color_theme('blue')
 
         self.devices = []
+
+        # Create the resource manager
+        self.resource_manager = ResourceManager()
 
         # Create main window title
         self.title("Audio Capture")
@@ -60,18 +67,19 @@ class AudioCaptureGUI(ctk.CTk):
         settings_frame.pack(side=tk.BOTTOM, fill=tk.BOTH, expand=True)
         ctk.CTkLabel(settings_frame, text="Settings", font=("Roboto", 18, "bold")).pack(side=tk.TOP)
         
-        # Create scale widget
-        self.noise_threshold = ctk.DoubleVar(value=0.1)
-        scale_frame = ctk.CTkFrame(settings_frame)
-        scale_frame.pack(side=tk.TOP, padx=10, pady=10, fill=tk.X, expand=False)
-        ctk.CTkLabel(scale_frame, text="Noise threshold:").pack(side=ctk.LEFT, padx=10)
-        ctk.CTkSlider(scale_frame,
-                 from_=0,
-                 to=1,
-                 orientation=ctk.HORIZONTAL,
-                 variable=self.noise_threshold,
-                 command=self.update_noise_threshold
-                 ).pack(side=ctk.LEFT, fill=ctk.X, expand=True)
+        # Create slider widget
+        self.slider_frame = SliderCustomFrame(settings_frame,
+                                              header_name='Noise threshold:',
+                                              command=self.update_noise_threshold)
+        self.slider_frame.pack(side=tk.TOP, padx=10, pady=10, fill=tk.X, expand=False)
+        
+        # Create theme Option
+        self.appearance_mode = OptionMenuCustomFrame(settings_frame,
+                                                     header_name='Appearance Mode:',
+                                                     values=["Light", "Dark", "System"],
+                                                     initial_value=ctk.get_appearance_mode(),
+                                                     command=self.change_appearance_mode_event)
+        self.appearance_mode.pack(side=tk.TOP, padx=10, pady=10, fill=tk.X, expand=False)
         
         # Create right frame
         right_frame = ctk.CTkFrame(self, border_width=2)
@@ -83,6 +91,11 @@ class AudioCaptureGUI(ctk.CTk):
         
         # Create equalizer canvas and put into equalizer_frame
         self.equalizer_canvas = ctk.CTkCanvas(equalizer_frame, bg="#333")
+
+        # load image in canvas
+        self.canvas_image = ImageTk.PhotoImage(Image.open(self.resource_manager.get_image_path('glass.jpg', 'bg')))
+
+        self.equalizer_canvas.create_image(0, 0, anchor=tk.NW, image=self.canvas_image)
         self.equalizer_canvas.pack(fill=tk.BOTH, expand=True)
 
         # Create buttons frame and put into right frame
@@ -151,7 +164,7 @@ class AudioCaptureGUI(ctk.CTk):
         a message to the EqualizerTkinterThread
 
         Args:
-            value (ctk.DoubleVar):A DoubleVar object to trak the threshold value
+            value (ctk.DoubleVar):A DoubleVar object to track the threshold value
         """
         if self.opengl_thread:
             message = {
@@ -159,6 +172,12 @@ class AudioCaptureGUI(ctk.CTk):
                 "value": float(value)
             }
             self.equalizer_control_queue.put(message)
+
+    def change_appearance_mode_event(self, new_appearance_mode: str):
+        """
+        Change the tkinter theme
+        """
+        ctk.set_appearance_mode(new_appearance_mode)
 
     def start_capture(self):
         """
@@ -168,7 +187,7 @@ class AudioCaptureGUI(ctk.CTk):
             # Start the OpenGL window in a new thread
             self.opengl_thread = EqualizerTkinterThread(
                 self.audio_queue,
-                noise_threshold=self.noise_threshold.get(),
+                noise_threshold=self.slider_frame.get_value(),
                 canvas=self.equalizer_canvas,
                 control_queue=self.equalizer_control_queue)
 
