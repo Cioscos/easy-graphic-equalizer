@@ -74,11 +74,11 @@ class AudioCaptureGUI(ctk.CTk):
         settings_frame.pack(side=tk.BOTTOM, fill=tk.BOTH, expand=True)
         ctk.CTkLabel(settings_frame, text="Settings", font=("Roboto", 18, "bold")).pack(side=tk.TOP)
         
-        # Create slider widget
-        self.slider_frame = SliderCustomFrame(settings_frame,
+        # Create slider widget for noise threshold
+        self.noise_slider = SliderCustomFrame(settings_frame,
                                               header_name='Noise threshold:',
                                               command=self.update_noise_threshold)
-        self.slider_frame.pack(side=tk.TOP, padx=10, pady=10, fill=tk.X, expand=False)
+        self.noise_slider.pack(side=tk.TOP, padx=10, pady=10, fill=tk.X, expand=False)
         
         # Create theme Option
         self.appearance_mode = OptionMenuCustomFrame(settings_frame,
@@ -95,6 +95,13 @@ class AudioCaptureGUI(ctk.CTk):
                                                      apply_command=self.apply_bg_comand)
         self.file_picker.pack(side=tk.TOP, padx=10, pady=10, fill=tk.X, expand=False)
         self.bg_filename = None
+
+        # alpha slider
+        self.alpha_slider = SliderCustomFrame(settings_frame,
+                                              header_name='Alpha amount:',
+                                              command=self.update_alpha,
+                                              initial_value=self.bg_alpha)
+        self.alpha_slider.pack(side=tk.TOP, padx=10, pady=10, fill=tk.X, expand=False)
 
         # Create right frame
         right_frame = ctk.CTkFrame(self, border_width=2)
@@ -179,8 +186,7 @@ class AudioCaptureGUI(ctk.CTk):
         if self.canvas_height != self.bg_img_used.height or self.canvas_width != self.bg_img_used.width:
             # Resize the image using the resize() method
             self.bg_img_used = self.bg_img_used.resize((self.canvas_width, self.canvas_height), Image.ANTIALIAS)
-            self.bg_img_used.putalpha(int(255 * self.bg_alpha))
-
+        
         self.canvas_image = ImageTk.PhotoImage(self.bg_img_used)
         self.equalizer_canvas.create_image(0, 0, anchor=ctk.NW, image=self.canvas_image, tags='background')
         self.equalizer_canvas.tag_lower('background')
@@ -234,6 +240,13 @@ class AudioCaptureGUI(ctk.CTk):
             }
             self.equalizer_control_queue.put(message)
 
+    def update_alpha(self, value):
+        self.bg_alpha = value
+        self.bg_img_used.putalpha(int(255 * self.bg_alpha))
+        self.canvas_image = ImageTk.PhotoImage(self.bg_img_used)
+        self.equalizer_canvas.create_image(0, 0, anchor=ctk.NW, image=self.canvas_image, tags='background')
+        self.equalizer_canvas.tag_lower('background')
+
     def change_appearance_mode_event(self, new_appearance_mode: str):
         """
         Change the tkinter theme
@@ -248,7 +261,7 @@ class AudioCaptureGUI(ctk.CTk):
             # Start the OpenGL window in a new thread
             self.opengl_thread = EqualizerTkinterThread(
                 self.audio_queue,
-                noise_threshold=self.slider_frame.get_value(),
+                noise_threshold=self.noise_slider.get_value(),
                 canvas=self.equalizer_canvas,
                 control_queue=self.equalizer_control_queue)
 
@@ -271,10 +284,8 @@ class AudioCaptureGUI(ctk.CTk):
                 if self.canvas_height != self.bg_img_used.height or self.canvas_width != self.bg_img_used.width:
                     # Resize the image using the resize() method starting from the original image
                     self.bg_img_used = self.bg_img.resize((self.canvas_width, self.canvas_height), Image.ANTIALIAS).copy()
-                    self.bg_img_used.putalpha(int(255 * self.bg_alpha))
 
                     self.canvas_image = ImageTk.PhotoImage(self.bg_img_used)
-                    self.equalizer_canvas.delete('background')
                     self.equalizer_canvas.create_image(0, 0, anchor=ctk.NW, image=self.canvas_image, tags='background')
                     self.equalizer_canvas.tag_lower('background')
 
