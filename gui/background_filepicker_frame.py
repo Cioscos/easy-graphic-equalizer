@@ -22,19 +22,19 @@ class BackgroundFilepickerFrame(ctk.CTkFrame):
 
         # Create the label in the first row
         self.label = ctk.CTkLabel(self, text=header_name)
-        self.label.grid(row=0, column=0, columnspan=2, sticky='N')
+        self.label.grid(row=0, column=0, columnspan=2, sticky='N', padx=5, pady=5)
 
         # Create the entry in the second row
         self.image_path_entry = ctk.CTkEntry(self, placeholder_text=placeholder_text if placeholder_text else '')
-        self.image_path_entry.grid(row=1, column=0, sticky="EW")
+        self.image_path_entry.grid(row=1, column=0, sticky="EW", padx=5, pady=5)
 
         # Create the button next to the entry in the second row
         self.file_picker_button = ctk.CTkButton(self, text='...', width=10, command=self.open_file_dialog)
-        self.file_picker_button.grid(row=1, column=1, sticky="E")
+        self.file_picker_button.grid(row=1, column=1, sticky="E", padx=5, pady=5)
 
         # Create the apply button in the third row
         self.apply_button = ctk.CTkButton(self, text='Apply', command=apply_command)
-        self.apply_button.grid(row=2, column=0, columnspan=2, sticky="EW")
+        self.apply_button.grid(row=2, column=0, columnspan=2, sticky="EW", padx=5, pady=5)
 
     def open_file_dialog(self) -> None:
         self._filename = tk.filedialog.askopenfilename(initialdir = "/", title = "Select a File", filetypes = (("Image files", "*.png;*.jpg;*.jpeg;*.gif"), ("all files", "*.*")))

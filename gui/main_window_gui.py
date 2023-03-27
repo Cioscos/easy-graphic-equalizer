@@ -40,7 +40,7 @@ class AudioCaptureGUI(ctk.CTk):
         self.resource_manager = ResourceManager()
 
         # Create main window title
-        self.title("Audio Capture")
+        self.title("Sound wave")
         self.minsize(800, 600)
 
         self.protocol(CLOSE_WINDOW_EVENT, self.on_close)
