@@ -105,22 +105,24 @@ class AudioCaptureGUI(ctk.CTk):
         equalizer_frame.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
         
         # Create equalizer canvas and put into equalizer_frame
-        self.equalizer_canvas = ctk.CTkCanvas(equalizer_frame, bg="#333")
+        self.equalizer_canvas = ctk.CTkCanvas(equalizer_frame, bg='#000')
 
         # load canvas bg image
         self.bg_img = Image.open(self.resource_manager.get_image_path('glass.jpg', 'bg'))
-        self.bg_img.putalpha(int(255 * self.bg_alpha))
+        self.bg_img_used = self.bg_img.copy()
+        self.bg_img_used.putalpha(int(255 * self.bg_alpha))
 
         # Chech image size to understand if it must be resized
         self.canvas_width, self.canvas_height = self.get_canvas_size()
 
-        if self.canvas_height > self.bg_img.height or self.canvas_width > self.bg_img.width:
+        if self.canvas_height > self.bg_img_used.height or self.canvas_width > self.bg_img_used.width:
             # Resize the image using the resize() method
-            self.bg_img = self.bg_img.resize((self.canvas_width, self.canvas_height), Image.ANTIALIAS)
+            self.bg_img_used = self.bg_img_used.resize((self.canvas_width, self.canvas_height), Image.ANTIALIAS)
 
-        self.canvas_image = ImageTk.PhotoImage(self.bg_img)
+        self.canvas_image = ImageTk.PhotoImage(self.bg_img_used)
 
-        self.equalizer_canvas.create_image(0, 0, anchor=tk.NW, image=self.canvas_image)
+        self.equalizer_canvas.create_image(0, 0, anchor=tk.NW, image=self.canvas_image, tags='background')
+        self.equalizer_canvas.tag_lower('background')
         self.equalizer_canvas.pack(fill=tk.BOTH, expand=True)
 
         # Create buttons frame and put into right frame
@@ -167,19 +169,21 @@ class AudioCaptureGUI(ctk.CTk):
     def apply_bg_comand(self):
         # load canvas bg image
         self.bg_img = Image.open(self.file_picker.get_filename())
-        self.bg_img.putalpha(int(255 * self.bg_alpha))
+        self.bg_img_used = self.bg_img.copy()
+        self.bg_img_used.putalpha(int(255 * self.bg_alpha))
         self.apply_background()
 
     def apply_background(self):
         self.equalizer_canvas.update_idletasks()
         self.canvas_width, self.canvas_height = self.equalizer_canvas.winfo_width(), self.equalizer_canvas.winfo_height()
-        if self.canvas_height > self.bg_img.height or self.canvas_width > self.bg_img.width:
+        if self.canvas_height != self.bg_img_used.height or self.canvas_width != self.bg_img_used.width:
             # Resize the image using the resize() method
-            self.bg_img = self.bg_img.resize((self.canvas_width, self.canvas_height), Image.ANTIALIAS)
-            self.bg_img.putalpha(int(255 * self.bg_alpha))
+            self.bg_img_used = self.bg_img_used.resize((self.canvas_width, self.canvas_height), Image.ANTIALIAS)
+            self.bg_img_used.putalpha(int(255 * self.bg_alpha))
 
-        self.canvas_image = ImageTk.PhotoImage(self.bg_img)
-        self.equalizer_canvas.create_image(0, 0, anchor=ctk.NW, image=self.canvas_image)
+        self.canvas_image = ImageTk.PhotoImage(self.bg_img_used)
+        self.equalizer_canvas.create_image(0, 0, anchor=ctk.NW, image=self.canvas_image, tags='background')
+        self.equalizer_canvas.tag_lower('background')
 
     async def get_devices(self):
         with ThreadPoolExecutor() as executor:
@@ -264,13 +268,15 @@ class AudioCaptureGUI(ctk.CTk):
             widget.update_idletasks()
             if widget_name == 'equalizer_canvas':
                 self.canvas_width, self.canvas_height = widget.winfo_width(), widget.winfo_height()
-                if self.canvas_height > self.bg_img.height or self.canvas_width > self.bg_img.width:
-                    # Resize the image using the resize() method
-                    self.bg_img = self.bg_img.resize((self.canvas_width, self.canvas_height), Image.ANTIALIAS)
-                    self.bg_img.putalpha(int(255 * self.bg_alpha))
+                if self.canvas_height != self.bg_img_used.height or self.canvas_width != self.bg_img_used.width:
+                    # Resize the image using the resize() method starting from the original image
+                    self.bg_img_used = self.bg_img.resize((self.canvas_width, self.canvas_height), Image.ANTIALIAS).copy()
+                    self.bg_img_used.putalpha(int(255 * self.bg_alpha))
 
-                    self.canvas_image = ImageTk.PhotoImage(self.bg_img)
-                    self.equalizer_canvas.create_image(0, 0, anchor=ctk.NW, image=self.canvas_image)
+                    self.canvas_image = ImageTk.PhotoImage(self.bg_img_used)
+                    self.equalizer_canvas.delete('background')
+                    self.equalizer_canvas.create_image(0, 0, anchor=ctk.NW, image=self.canvas_image, tags='background')
+                    self.equalizer_canvas.tag_lower('background')
 
     def run(self):
         """

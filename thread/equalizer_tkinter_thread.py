@@ -80,9 +80,9 @@ class EqualizerTkinterThread(threading.Thread):
             x = i * total_bar_width + bar_spacing / 2
             y = window_height
 
-            green_bar = self.canvas.create_rectangle(x, y, x + bar_width, y, fill='green')
-            yellow_bar = self.canvas.create_rectangle(x, y, x + bar_width, y, fill='yellow')
-            red_bar = self.canvas.create_rectangle(x, y, x + bar_width, y, fill='red')
+            green_bar = self.canvas.create_rectangle(x, y, x + bar_width, y, fill='green', tags='bars')
+            yellow_bar = self.canvas.create_rectangle(x, y, x + bar_width, y, fill='yellow', tags='bars')
+            red_bar = self.canvas.create_rectangle(x, y, x + bar_width, y, fill='red', tags='bars')
             self.bars.append((green_bar, yellow_bar, red_bar))
 
     def create_equalizer(self, audio_data, frequency_bands, noise_threshold=0.1, channels=2):
@@ -170,4 +170,4 @@ class EqualizerTkinterThread(threading.Thread):
     def stop(self):
         # Stop the thread by breaking the main loop
         self.stop_event.set()
-        self.canvas.delete("all")
+        self.canvas.delete("bars")
