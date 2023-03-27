@@ -4,22 +4,11 @@ import time
 import numpy as np
 import scipy.fftpack as fft_pack
 
-FREQUENCY_BANDS = [
-    (31.25, 62.5),
-    (62.5, 125),
-    (125, 250),
-    (250, 500),
-    (500, 1000),
-    (1000, 2000),
-    (2000, 4000),
-    (4000, 8000),
-    (8000, 16000)
-]
 RATE = 44100
 FRAME_RATE = 120
 
 class EqualizerTkinterThread(threading.Thread):
-    def __init__(self, audio_queue, noise_threshold=0.1, channels=2, canvas=None, control_queue=None):
+    def __init__(self, audio_queue, noise_threshold=0.1, channels=2, n_bands=9, canvas=None, control_queue=None):
         super().__init__()
         self.audio_queue = audio_queue
         self.control_queue = control_queue
@@ -27,6 +16,8 @@ class EqualizerTkinterThread(threading.Thread):
         self.channels = channels
         self.canvas = canvas
         self.bars = []
+        self.n_bands = n_bands
+        self.frequency_bands = self.generate_frequency_bands(self.n_bands)
         self.stop_event = threading.Event()
 
     def run(self):
@@ -34,7 +25,7 @@ class EqualizerTkinterThread(threading.Thread):
         previous_time = time.time()
 
         # List of temporary amplitudes to create an animation effect
-        previous_amplitudes = [0] * len(FREQUENCY_BANDS)
+        previous_amplitudes = [0] * len(self.frequency_bands)
 
         # Initialize the rectangles for the first time
         self.canvas.after_idle(self.init_bars)
@@ -59,7 +50,7 @@ class EqualizerTkinterThread(threading.Thread):
             if elapsed_time >= frame_duration:
 
                 if audio_buffer is not None:
-                    amplitudes = self.create_equalizer(audio_buffer, FREQUENCY_BANDS, self.noise_threshold, self.channels)
+                    amplitudes = self.create_equalizer(audio_buffer, self.frequency_bands, self.noise_threshold, self.channels)
 
                     # exponential smoothing
                     smooth_factor = 1 - math.exp(-elapsed_time / (frame_duration * 5))
@@ -68,10 +59,26 @@ class EqualizerTkinterThread(threading.Thread):
 
                 previous_time = current_time
 
+    def generate_frequency_bands(self, num_bands):
+        min_freq = 31.25
+        max_freq = 16000
+        bands = []
+
+        # Calculate the ratio for the geometric progression
+        ratio = (max_freq / min_freq) ** (1 / (num_bands - 1))
+
+        # Generate frequency bands
+        for i in range(num_bands):
+            lower_bound = min_freq * (ratio ** i)
+            upper_bound = lower_bound * ratio
+            bands.append((lower_bound, upper_bound))
+
+        return bands
+
     def init_bars(self):
         window_width = self.canvas.winfo_width()
         window_height = self.canvas.winfo_height()
-        num_bars = len(FREQUENCY_BANDS)
+        num_bars = len(self.frequency_bands)
         total_bar_width = window_width / num_bars
         bar_width = total_bar_width * 0.8
         bar_spacing = total_bar_width * 0.2
