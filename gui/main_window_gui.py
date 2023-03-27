@@ -11,6 +11,7 @@ from thread.audioCaptureThread import AudioCaptureThread
 from thread.equalizer_tkinter_thread import EqualizerTkinterThread
 from gui.slider_frame import SliderCustomFrame
 from gui.optionmenu_frame import OptionMenuCustomFrame
+from gui.background_filepicker_frame import BackgroundFilepickerFrame
 from resource_manager import ResourceManager
 
 MAX_QUEUE_SIZE = 200
@@ -86,7 +87,15 @@ class AudioCaptureGUI(ctk.CTk):
                                                      initial_value=ctk.get_appearance_mode(),
                                                      command=self.change_appearance_mode_event)
         self.appearance_mode.pack(side=tk.TOP, padx=10, pady=10, fill=tk.X, expand=False)
-        
+
+        # Background file picker
+        self.file_picker = BackgroundFilepickerFrame(settings_frame,
+                                                     header_name='Background Image Path:',
+                                                     placeholder_text= 'Insert background image path',
+                                                     apply_command=self.apply_bg_comand)
+        self.file_picker.pack(side=tk.TOP, padx=10, pady=10, fill=tk.X, expand=False)
+        self.bg_filename = None
+
         # Create right frame
         right_frame = ctk.CTkFrame(self, border_width=2)
         right_frame.pack(side=ctk.RIGHT, padx=10, pady=10, fill=tk.BOTH, expand=True)
@@ -154,6 +163,23 @@ class AudioCaptureGUI(ctk.CTk):
             tuple: width and height of the canvas
         """
         return (self.equalizer_canvas.winfo_width(), self.equalizer_canvas.winfo_height())
+    
+    def apply_bg_comand(self):
+        # load canvas bg image
+        self.bg_img = Image.open(self.file_picker.get_filename())
+        self.bg_img.putalpha(int(255 * self.bg_alpha))
+        self.apply_background()
+
+    def apply_background(self):
+        self.equalizer_canvas.update_idletasks()
+        self.canvas_width, self.canvas_height = self.equalizer_canvas.winfo_width(), self.equalizer_canvas.winfo_height()
+        if self.canvas_height > self.bg_img.height or self.canvas_width > self.bg_img.width:
+            # Resize the image using the resize() method
+            self.bg_img = self.bg_img.resize((self.canvas_width, self.canvas_height), Image.ANTIALIAS)
+            self.bg_img.putalpha(int(255 * self.bg_alpha))
+
+        self.canvas_image = ImageTk.PhotoImage(self.bg_img)
+        self.equalizer_canvas.create_image(0, 0, anchor=ctk.NW, image=self.canvas_image)
 
     async def get_devices(self):
         with ThreadPoolExecutor() as executor:
