@@ -1,10 +1,8 @@
 import threading
 import queue
-import pyaudiowpatch as pyaudio
 
 # Audio parameters
 CHUNK = 1024
-FORMAT = pyaudio.paInt16
 CHANNELS = 2 # stereo
 RATE = 44100
 
@@ -13,7 +11,6 @@ class AudioCaptureThread(threading.Thread):
     def __init__(self, audio_queue, device, debug=False, defaultSampleRate=RATE, channels=2):
         threading.Thread.__init__(self)
         self._running = True
-        #self.p = pyaudio.PyAudio()
         self.device = device
         self.audio_queue = audio_queue
         self._debug = debug
