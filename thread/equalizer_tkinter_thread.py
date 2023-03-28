@@ -6,6 +6,8 @@ import scipy.fftpack as fft_pack
 
 RATE = 44100
 FRAME_RATE = 120
+MIN_FREQ = 20
+MAX_FREQ = 20000
 
 class EqualizerTkinterThread(threading.Thread):
     def __init__(self, audio_queue, noise_threshold=0.1, channels=2, n_bands=9, canvas=None, control_queue=None):
@@ -61,22 +63,12 @@ class EqualizerTkinterThread(threading.Thread):
                 previous_time = current_time
 
     def generate_frequency_bands(self, num_bands):
-        min_freq = 31.25
-        max_freq = 20000
-        reference_freq = 1000  # 1 kHz is often used as a reference frequency for one-third octave bands
+        min_log_freq = np.log10(MIN_FREQ)
+        max_log_freq = np.log10(MAX_FREQ)
 
-        # Calculate the one-third octave band frequencies
-        k_values = np.arange(-num_bands // 2, num_bands // 2 + 1)
-        center_freqs = reference_freq * (2 ** (k_values / 3))
+        log_freqs = np.logspace(min_log_freq, max_log_freq, num=num_bands + 1)
 
-        # Clip the center frequencies to the range [min_freq, max_freq]
-        center_freqs = np.clip(center_freqs, min_freq, max_freq)
-
-        # Calculate the lower and upper bounds of each frequency band
-        lower_bounds = center_freqs / (2 ** (1 / 6))
-        upper_bounds = center_freqs * (2 ** (1 / 6))
-
-        bands = list(zip(lower_bounds, upper_bounds))
+        bands = [(log_freqs[i], log_freqs[i + 1]) for i in range(num_bands)]
 
         return bands
 
@@ -105,19 +97,28 @@ class EqualizerTkinterThread(threading.Thread):
 
         equalizer_data = []
 
+        n_fft=8192
+
         for channel_samples in audio_samples:
-            # apply a window function to reduce leakage effect
-            window = np.hanning(len(channel_samples))
+            # Apply a window function to reduce leakage effect
+            window = np.blackman(len(channel_samples))
             windowed_samples = channel_samples * window
-            fft_values = np.abs(fft_pack.fft(windowed_samples))
+
+            # Zero-padding
+            padded_samples = np.pad(windowed_samples, (0, n_fft - len(windowed_samples)), 'constant')
+
+            fft_values = np.abs(fft_pack.fft(padded_samples))
             freqs = fft_pack.fftfreq(len(fft_values), 1.0 / RATE)
 
             band_amplitudes = []
             for low_freq, high_freq in frequency_bands:
                 band_filter = np.logical_and(freqs >= low_freq, freqs <= high_freq)
-                # band_amplitude = np.mean(fft_values[band_filter])
-                # band_amplitude = np.max(fft_values[band_filter])  # Change this line to use np.max instead of np.mean
-                band_amplitude = np.mean(fft_values[band_filter]) * np.sum(band_filter)  # Multiply mean by the number of bins in the band
+
+                if np.any(band_filter):
+                    band_amplitude = np.mean(fft_values[band_filter]) * np.sum(band_filter)
+                else:
+                    band_amplitude = 0
+
                 band_amplitudes.append(band_amplitude)
 
             equalizer_data.append(band_amplitudes)
@@ -130,7 +131,8 @@ class EqualizerTkinterThread(threading.Thread):
                                 for amplitude in filtered_amplitudes]
 
         return normalized_amplitudes
-    
+
+
     def draw_bars(self, amplitudes, canvas, smooth_factor=0.1):
         window_width = canvas.winfo_width()
         window_height = canvas.winfo_height()
