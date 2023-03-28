@@ -15,6 +15,7 @@ from gui.background_filepicker_frame import BackgroundFilepickerFrame
 from resource_manager import ResourceManager
 
 MAX_QUEUE_SIZE = 200
+INITIAL_FREQUENCIES_BANDS = 9
 SINGLE_LEFT_MOUSE_BOTTON_CLICK = '<Button-1>'
 CLOSE_WINDOW_EVENT = 'WM_DELETE_WINDOW'
 CONFIGURE_EVENT = '<Configure>'
@@ -102,6 +103,16 @@ class AudioCaptureGUI(ctk.CTk):
                                               command=self.update_alpha,
                                               initial_value=self.bg_alpha)
         self.alpha_slider.pack(side=tk.TOP, padx=10, pady=10, fill=tk.X, expand=False)
+
+        # Bands number
+        self.frequency_slider = SliderCustomFrame(settings_frame,
+                                              header_name='Frequency bands:',
+                                              command=self.update_frequency_bands,
+                                              from_=1,
+                                              to=32,
+                                              steps=32,
+                                              initial_value=INITIAL_FREQUENCIES_BANDS)
+        self.frequency_slider.pack(side=tk.TOP, padx=10, pady=10, fill=tk.X, expand=False)
 
         # Create right frame
         right_frame = ctk.CTkFrame(self, border_width=2)
@@ -240,6 +251,14 @@ class AudioCaptureGUI(ctk.CTk):
             }
             self.equalizer_control_queue.put(message)
 
+    def update_frequency_bands(self, value):
+        if self.opengl_thread:
+            message = {
+                "type": "set_frequency_bands",
+                "value": int(value)
+            }
+            self.equalizer_control_queue.put(message)
+
     def update_alpha(self, value):
         self.bg_alpha = value
         self.bg_img_used.putalpha(int(255 * self.bg_alpha))
@@ -262,6 +281,7 @@ class AudioCaptureGUI(ctk.CTk):
             self.opengl_thread = EqualizerTkinterThread(
                 self.audio_queue,
                 noise_threshold=self.noise_slider.get_value(),
+                n_bands=int(self.frequency_slider.get_value()),
                 canvas=self.equalizer_canvas,
                 control_queue=self.equalizer_control_queue)
 

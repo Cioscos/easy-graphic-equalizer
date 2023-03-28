@@ -17,15 +17,16 @@ class EqualizerTkinterThread(threading.Thread):
         self.canvas = canvas
         self.bars = []
         self.n_bands = n_bands
+
+        # List of temporary amplitudes to create an animation effect
         self.frequency_bands = self.generate_frequency_bands(self.n_bands)
+
+        self.previous_amplitudes = [0] * len(self.frequency_bands)
         self.stop_event = threading.Event()
 
     def run(self):
         frame_duration = 1 / FRAME_RATE
         previous_time = time.time()
-
-        # List of temporary amplitudes to create an animation effect
-        previous_amplitudes = [0] * len(self.frequency_bands)
 
         # Initialize the rectangles for the first time
         self.canvas.after_idle(self.init_bars)
@@ -55,23 +56,27 @@ class EqualizerTkinterThread(threading.Thread):
                     # exponential smoothing
                     smooth_factor = 1 - math.exp(-elapsed_time / (frame_duration * 5))
                     # Render the bars
-                    self.draw_bars(amplitudes, self.canvas, previous_amplitudes, smooth_factor=smooth_factor)
+                    self.draw_bars(amplitudes, self.canvas, smooth_factor=smooth_factor)
 
                 previous_time = current_time
 
     def generate_frequency_bands(self, num_bands):
         min_freq = 31.25
-        max_freq = 16000
-        bands = []
+        max_freq = 20000
+        reference_freq = 1000  # 1 kHz is often used as a reference frequency for one-third octave bands
 
-        # Calculate the ratio for the geometric progression
-        ratio = (max_freq / min_freq) ** (1 / (num_bands - 1))
+        # Calculate the one-third octave band frequencies
+        k_values = np.arange(-num_bands // 2, num_bands // 2 + 1)
+        center_freqs = reference_freq * (2 ** (k_values / 3))
 
-        # Generate frequency bands
-        for i in range(num_bands):
-            lower_bound = min_freq * (ratio ** i)
-            upper_bound = lower_bound * ratio
-            bands.append((lower_bound, upper_bound))
+        # Clip the center frequencies to the range [min_freq, max_freq]
+        center_freqs = np.clip(center_freqs, min_freq, max_freq)
+
+        # Calculate the lower and upper bounds of each frequency band
+        lower_bounds = center_freqs / (2 ** (1 / 6))
+        upper_bounds = center_freqs * (2 ** (1 / 6))
+
+        bands = list(zip(lower_bounds, upper_bounds))
 
         return bands
 
@@ -126,7 +131,7 @@ class EqualizerTkinterThread(threading.Thread):
 
         return normalized_amplitudes
     
-    def draw_bars(self, amplitudes, canvas, previous_amplitudes, smooth_factor=0.1):
+    def draw_bars(self, amplitudes, canvas, smooth_factor=0.1):
         window_width = canvas.winfo_width()
         window_height = canvas.winfo_height()
         num_bars = len(amplitudes)
@@ -136,8 +141,8 @@ class EqualizerTkinterThread(threading.Thread):
 
         for i, amplitude in enumerate(amplitudes):
             # LERP between the previous amplitude and the new amplitude
-            interpolated_amplitude = previous_amplitudes[i] + smooth_factor * (amplitude - previous_amplitudes[i])
-            previous_amplitudes[i] = interpolated_amplitude
+            interpolated_amplitude = self.previous_amplitudes[i] + smooth_factor * (amplitude - self.previous_amplitudes[i])
+            self.previous_amplitudes[i] = interpolated_amplitude
 
             x = i * total_bar_width + bar_spacing / 2
             y = window_height
@@ -162,17 +167,16 @@ class EqualizerTkinterThread(threading.Thread):
             red_bar = self.bars[i][2]
             canvas.coords(red_bar, x, y - green_height - yellow_height - red_height, x + bar_width, y - green_height - yellow_height)
 
-
-    def calculate_bar_sizes(self, window_sizes, num_bars):
-        window_width, _ = window_sizes
-        bar_total_width = window_width / num_bars
-        bar_spacing = bar_total_width * 0.2
-        bar_width = bar_total_width - bar_spacing
-        return bar_width, bar_spacing
-    
     def process_control_message(self, message):
         if message["type"] == "set_noise_threshold":
             self.noise_threshold = message["value"]
+        elif message['type'] == 'set_frequency_bands':
+            self.frequency_bands = self.generate_frequency_bands(message["value"])
+            # print(self.frequency_bands)
+            self.previous_amplitudes = [0] * len(self.frequency_bands)
+            self.bars.clear()
+            self.canvas.delete("bars")
+            self.init_bars()
     
     def stop(self):
         # Stop the thread by breaking the main loop

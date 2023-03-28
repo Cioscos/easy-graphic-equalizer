@@ -10,6 +10,9 @@ class SliderCustomFrame(tk.CTkFrame):
                  *args,
                  header_name: str = 'SliderCustomFrame',
                  initial_value: float = 0.1,
+                 from_: int = 0,
+                 to: int = 1,
+                 steps: Optional[int] = None,
                  command: Optional[Callable] = None,
                  **kwargs):
         super().__init__(*args, **kwargs)
@@ -20,10 +23,11 @@ class SliderCustomFrame(tk.CTkFrame):
         self.slider_value = tk.DoubleVar(value=initial_value)
 
         slider = tk.CTkSlider(self,
-                 from_=0,
-                 to=1,
+                 from_=from_,
+                 to=to,
                  orientation=tk.HORIZONTAL,
                  variable=self.slider_value,
+                 number_of_steps=steps,
                  command=self._combine_funcs(command, self._update_value_text)
                  )
         slider.pack(side=tk.LEFT, fill=tk.X, expand=True)
