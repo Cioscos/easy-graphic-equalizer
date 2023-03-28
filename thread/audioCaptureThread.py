@@ -4,7 +4,7 @@ import queue
 # Audio parameters
 CHUNK = 1024
 CHANNELS = 2 # stereo
-RATE = 48000
+RATE = 44100
 
 # Define a thread for capturing audio
 class AudioCaptureThread(threading.Thread):

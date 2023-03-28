@@ -6,6 +6,7 @@ import scipy.fftpack as fft_pack
 
 RATE = 44100
 FRAME_RATE = 120
+N_FFT=8192
 MIN_FREQ = 20
 MAX_FREQ = 20000
 
@@ -97,15 +98,13 @@ class EqualizerTkinterThread(threading.Thread):
 
         equalizer_data = []
 
-        n_fft=8192
-
         for channel_samples in audio_samples:
             # Apply a window function to reduce leakage effect
             window = np.blackman(len(channel_samples))
             windowed_samples = channel_samples * window
 
             # Zero-padding
-            padded_samples = np.pad(windowed_samples, (0, n_fft - len(windowed_samples)), 'constant')
+            padded_samples = np.pad(windowed_samples, (0, N_FFT - len(windowed_samples)), 'constant')
 
             fft_values = np.abs(fft_pack.fft(padded_samples))
             freqs = fft_pack.fftfreq(len(fft_values), 1.0 / RATE)
