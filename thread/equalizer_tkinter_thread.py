@@ -6,7 +6,7 @@ import scipy.fftpack as fft_pack
 
 RATE = 44100
 FRAME_RATE = 120
-N_FFT=8192
+N_FFT= 8192
 MIN_FREQ = 20
 MAX_FREQ = 20000
 

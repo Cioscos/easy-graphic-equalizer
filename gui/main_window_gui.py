@@ -172,7 +172,7 @@ class AudioCaptureGUI(ctk.CTk):
         self.audio_queue = None
         self.equalizer_control_queue = queue.Queue()
         self.audio_thread = None
-        self.opengl_thread = None
+        self.canvas_thread = None
         self.last_device_selected = None
 
     def get_canvas_size(self) -> tuple[int, int]:
@@ -244,7 +244,7 @@ class AudioCaptureGUI(ctk.CTk):
         Args:
             value (ctk.DoubleVar):A DoubleVar object to track the threshold value
         """
-        if self.opengl_thread:
+        if self.canvas_thread:
             message = {
                 "type": "set_noise_threshold",
                 "value": float(value)
@@ -252,7 +252,7 @@ class AudioCaptureGUI(ctk.CTk):
             self.equalizer_control_queue.put(message)
 
     def update_frequency_bands(self, value):
-        if self.opengl_thread:
+        if self.canvas_thread:
             message = {
                 "type": "set_frequency_bands",
                 "value": int(value)
@@ -276,25 +276,25 @@ class AudioCaptureGUI(ctk.CTk):
         """
         Start the equalizer thread when the start button is pressed
         """
-        if self.audio_thread and not self.opengl_thread:
+        if self.audio_thread and not self.canvas_thread:
             # Start the OpenGL window in a new thread
-            self.opengl_thread = EqualizerTkinterThread(
+            self.canvas_thread = EqualizerTkinterThread(
                 self.audio_queue,
                 noise_threshold=self.noise_slider.get_value(),
                 n_bands=int(self.frequency_slider.get_value()),
                 canvas=self.equalizer_canvas,
                 control_queue=self.equalizer_control_queue)
 
-            self.opengl_thread.start()
+            self.canvas_thread.start()
 
     def stop_capture(self):
         """
         Check if the equalizer thread is running and if it is
         grecefully stop it
         """
-        if self.opengl_thread and self.opengl_thread.is_alive():
-            self.opengl_thread.stop()
-            self.opengl_thread = None
+        if self.canvas_thread and self.canvas_thread.is_alive():
+            self.canvas_thread.stop()
+            self.canvas_thread = None
 
     def on_resize(self, _, widgets: dict[str, ctk.CTkBaseClass]):
         for widget_name, widget in widgets.items():
@@ -320,10 +320,10 @@ class AudioCaptureGUI(ctk.CTk):
         Starts when the tkinter window is closed.
         It gracefully stop all the started threads.
         """
-        if self.opengl_thread:
-            self.opengl_thread.stop()
-            while self.opengl_thread.is_alive():
-                self.opengl_thread.join(timeout=0.1)
+        if self.canvas_thread:
+            self.canvas_thread.stop()
+            while self.canvas_thread.is_alive():
+                self.canvas_thread.join(timeout=0.1)
                 # Update the GUI main loop to process events
                 # it avoid deadlock between the threads
                 self.update()
