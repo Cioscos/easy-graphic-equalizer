@@ -78,12 +78,6 @@ class AudioCaptureGUI(ctk.CTk):
         settings_frame.pack(side=tk.BOTTOM, fill=tk.BOTH, expand=True)
         ctk.CTkLabel(settings_frame, text="Settings", font=("Roboto", 18, "bold")).pack(side=tk.TOP, padx=5, pady=5)
         
-        # Create slider widget for noise threshold
-        self.noise_slider = SliderCustomFrame(settings_frame,
-                                              header_name='Noise threshold:',
-                                              command=self.update_noise_threshold)
-        self.noise_slider.pack(side=tk.TOP, padx=10, pady=10, fill=tk.X, expand=False)
-        
         # Create theme Option
         self.appearance_mode = OptionMenuCustomFrame(settings_frame,
                                                      header_name='Appearance Mode:',
@@ -106,6 +100,12 @@ class AudioCaptureGUI(ctk.CTk):
                                               command=self.update_alpha,
                                               initial_value=self.bg_alpha)
         self.alpha_slider.pack(side=tk.TOP, padx=10, pady=10, fill=tk.X, expand=False)
+
+        # Create slider widget for noise threshold
+        self.noise_slider = SliderCustomFrame(settings_frame,
+                                              header_name='Noise threshold:',
+                                              command=self.update_noise_threshold)
+        self.noise_slider.pack(side=tk.TOP, padx=10, pady=10, fill=tk.X, expand=False)
 
         # Bands number
         self.frequency_slider = SliderCustomFrame(settings_frame,
