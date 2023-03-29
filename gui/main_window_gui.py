@@ -14,6 +14,7 @@ from thread.opengl_thread import EqualizerOpenGLThread
 from gui.slider_frame import SliderCustomFrame
 from gui.optionmenu_frame import OptionMenuCustomFrame
 from gui.background_filepicker_frame import BackgroundFilepickerFrame
+from gui.help_window import HelpWindow
 from resource_manager import ResourceManager
 
 MAX_QUEUE_SIZE = 200
@@ -75,7 +76,7 @@ class AudioCaptureGUI(ctk.CTk):
         # Create settings frame
         settings_frame = ctk.CTkFrame(left_frame, border_width=2)
         settings_frame.pack(side=tk.BOTTOM, fill=tk.BOTH, expand=True)
-        ctk.CTkLabel(settings_frame, text="Settings", font=("Roboto", 18, "bold")).pack(side=tk.TOP)
+        ctk.CTkLabel(settings_frame, text="Settings", font=("Roboto", 18, "bold")).pack(side=tk.TOP, padx=5, pady=5)
         
         # Create slider widget for noise threshold
         self.noise_slider = SliderCustomFrame(settings_frame,
@@ -145,35 +146,37 @@ class AudioCaptureGUI(ctk.CTk):
         self.equalizer_canvas.tag_lower('background')
         self.equalizer_canvas.pack(fill=tk.BOTH, expand=True)
 
-        self.fullscreen_icn = ctk.CTkImage(dark_image=Image.open(self.resource_manager.get_image_path('maximize.png', 'icons')), size=(30, 30))
-        self.fullscreen_btn = ctk.CTkButton(self.equalizer_canvas,
-                                            command=self.fullscreen_command,
-                                            image=self.fullscreen_icn,
-                                            width=50,
-                                            height=50,
-                                            text='Fullscreen',
-                                            font=("Roboto", 12))
-        self.fullscreen_btn.pack(anchor=ctk.NE, side=ctk.BOTTOM, padx=5, pady=5)
-
         # Create buttons frame and put into right frame
         buttons_frame = ctk.CTkFrame(right_frame)
         buttons_frame.pack(side=tk.BOTTOM, fill=tk.X)
 
-        # Create start button
-        self.start_button = ctk.CTkButton(buttons_frame,
-                  text="Start",
-                  command=self.start_capture,
-                  font=("Roboto", 16),
-                  fg_color='green')
-        self.start_button.pack(side=tk.LEFT, padx=10, pady=10, fill=tk.X, expand=True)
+        # controls the state of the start/stop button.
+        self.is_on_start = True
 
-        # Create stop button
-        self.stop_button = ctk.CTkButton(buttons_frame,
-                                         text='Stop',
-                                         font=("Roboto", 16),
-                                         fg_color='red',
-                                         command=self.stop_capture)
-        self.stop_button.pack(side=tk.RIGHT, padx=10, pady=10, fill=tk.X, expand=True)
+        # Create start/stop button
+        self.start_stop_button = ctk.CTkButton(buttons_frame,
+                  text="Start/Pause",
+                  command=self.start_stop_capture,
+                  font=("Roboto", 16),
+                  fg_color='green',
+                  state='disabled')
+        self.start_stop_button.pack(padx=5, pady=5, fill=ctk.BOTH, side=tk.LEFT, expand=True)
+
+        self.fullscreen_icn = ctk.CTkImage(dark_image=Image.open(self.resource_manager.get_image_path('maximize.png', 'icons')))
+        self.fullscreen_btn = ctk.CTkButton(buttons_frame,
+                                            command=self.fullscreen_command,
+                                            image=self.fullscreen_icn,
+                                            text='Fullscreen',
+                                            font=("Roboto", 16))
+        self.fullscreen_btn.pack(padx=5, pady=5, fill=ctk.BOTH, side=tk.LEFT, expand=True)
+
+        help_icn = ctk.CTkImage(dark_image=Image.open(self.resource_manager.get_image_path('help.png', 'icons')))
+        help_button = ctk.CTkButton(buttons_frame,
+                                    command=self.open_help_window,
+                                    image=help_icn,
+                                    text='Help',
+                                    font=("Roboto", 16))
+        help_button.pack(padx=5, pady=5, fill=ctk.BOTH, side=tk.LEFT, expand=True)
 
         # BIND THE EVENT
         # Create a dictionary with all the widget to check in the on_resize callback
@@ -188,6 +191,7 @@ class AudioCaptureGUI(ctk.CTk):
         self.equalizer_opengl_thread = None
         self.last_device_selected = None
         self.resize_scheduled = False
+        self.help_window = None
 
     def get_canvas_size(self) -> tuple[int, int]:
         """
@@ -254,6 +258,7 @@ class AudioCaptureGUI(ctk.CTk):
                     self.audio_queue, device=device)
                 self.audio_thread.start()
                 self.last_device_selected = device
+                self.start_stop_button.configure(state='normal')
 
     def stop_audio_thread(self):
         if self.audio_thread:
@@ -310,6 +315,7 @@ class AudioCaptureGUI(ctk.CTk):
                     n_bands=int(self.frequency_slider.get_value()),
                     canvas=self.equalizer_canvas,
                     control_queue=self.equalizer_control_queue)
+                self.canvas_thread.start()
 
             else:
                 self.show_no_audio_thread_warning()
@@ -322,6 +328,16 @@ class AudioCaptureGUI(ctk.CTk):
         if self.canvas_thread and self.canvas_thread.is_alive():
             self.canvas_thread.stop()
             self.canvas_thread = None
+
+    def start_stop_capture(self):
+        if self.is_on_start:
+            self.start_stop_button.configure(fg_color='red')
+            self.start_capture()
+            self.is_on_start = False
+        else:
+            self.start_stop_button.configure(fg_color='green')
+            self.stop_capture()
+            self.is_on_start = True
 
     def fullscreen_command(self):
         if self.canvas_thread and self.canvas_thread.is_alive():
@@ -336,6 +352,14 @@ class AudioCaptureGUI(ctk.CTk):
             self.equalizer_opengl_thread.start()
         else:
             self.show_no_audio_thread_warning()
+
+    def open_help_window(self):
+        if self.help_window is None or not self.help_window.winfo_exists():
+            self.help_window = HelpWindow(self)
+            self.help_window.focus()
+            self.help_window.after(20, self.help_window.lift)
+        else:
+            self.help_window.focus()
 
     def show_no_audio_thread_warning(self):
         tk.messagebox.showwarning("Warning", "Select a device first!")
