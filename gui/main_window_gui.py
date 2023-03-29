@@ -1,6 +1,7 @@
 import queue
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
+import time
 
 import customtkinter as ctk
 import tkinter as tk
@@ -186,6 +187,7 @@ class AudioCaptureGUI(ctk.CTk):
         self.canvas_thread = None
         self.equalizer_opengl_thread = None
         self.last_device_selected = None
+        self.resize_scheduled = False
 
     def get_canvas_size(self) -> tuple[int, int]:
         """
@@ -340,16 +342,20 @@ class AudioCaptureGUI(ctk.CTk):
 
     def on_resize(self, _, widgets: dict[str, ctk.CTkBaseClass]):
         for widget_name, widget in widgets.items():
-            widget.update_idletasks()
             if widget_name == 'equalizer_canvas':
-                self.canvas_width, self.canvas_height = widget.winfo_width(), widget.winfo_height()
-                if self.canvas_height != self.bg_img_used.height or self.canvas_width != self.bg_img_used.width:
-                    # Resize the image using the resize() method starting from the original image
-                    self.bg_img_used = self.bg_img.resize((self.canvas_width, self.canvas_height), Image.ANTIALIAS).copy()
-                    self.bg_img_used.putalpha(int(255 * self.bg_alpha))
-                    self.canvas_image = ImageTk.PhotoImage(self.bg_img_used)
-                    self.equalizer_canvas.create_image(0, 0, anchor=ctk.NW, image=self.canvas_image, tags='background')
-                    self.equalizer_canvas.tag_lower('background')
+                if not self.resize_scheduled:
+                    self.resize_scheduled = True
+                    self.after(200, self.resize_background, widget)
+
+    def resize_background(self, canvas: tk.Canvas):
+        self.canvas_width, self.canvas_height = canvas.winfo_width(), canvas.winfo_height()
+        # Resize the image using the resize() method starting from the original image
+        self.bg_img_used = self.bg_img.resize((self.canvas_width, self.canvas_height), Image.ANTIALIAS).copy()
+        self.bg_img_used.putalpha(int(255 * self.bg_alpha))
+        self.canvas_image = ImageTk.PhotoImage(self.bg_img_used)
+        self.equalizer_canvas.create_image(0, 0, anchor=ctk.NW, image=self.canvas_image, tags='background')
+        self.equalizer_canvas.tag_lower('background') 
+        self.resize_scheduled = False
 
     def run(self):
         """
