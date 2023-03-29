@@ -9,6 +9,7 @@ from PIL import Image, ImageTk
 
 from thread.audioCaptureThread import AudioCaptureThread
 from thread.equalizer_tkinter_thread import EqualizerTkinterThread
+from thread.opengl_thread import EqualizerOpenGLThread
 from gui.slider_frame import SliderCustomFrame
 from gui.optionmenu_frame import OptionMenuCustomFrame
 from gui.background_filepicker_frame import BackgroundFilepickerFrame
@@ -143,6 +144,16 @@ class AudioCaptureGUI(ctk.CTk):
         self.equalizer_canvas.tag_lower('background')
         self.equalizer_canvas.pack(fill=tk.BOTH, expand=True)
 
+        self.fullscreen_icn = ctk.CTkImage(dark_image=Image.open(self.resource_manager.get_image_path('maximize.png', 'icons')), size=(30, 30))
+        self.fullscreen_btn = ctk.CTkButton(self.equalizer_canvas,
+                                            command=self.fullscreen_command,
+                                            image=self.fullscreen_icn,
+                                            width=50,
+                                            height=50,
+                                            text='Fullscreen',
+                                            font=("Roboto", 12))
+        self.fullscreen_btn.pack(anchor=ctk.NE, side=ctk.BOTTOM, padx=5, pady=5)
+
         # Create buttons frame and put into right frame
         buttons_frame = ctk.CTkFrame(right_frame)
         buttons_frame.pack(side=tk.BOTTOM, fill=tk.X)
@@ -173,6 +184,7 @@ class AudioCaptureGUI(ctk.CTk):
         self.equalizer_control_queue = queue.Queue()
         self.audio_thread = None
         self.canvas_thread = None
+        self.equalizer_opengl_thread = None
         self.last_device_selected = None
 
     def get_canvas_size(self) -> tuple[int, int]:
@@ -244,7 +256,7 @@ class AudioCaptureGUI(ctk.CTk):
         Args:
             value (ctk.DoubleVar):A DoubleVar object to track the threshold value
         """
-        if self.canvas_thread:
+        if self.canvas_thread or self.equalizer_opengl_thread:
             message = {
                 "type": "set_noise_threshold",
                 "value": float(value)
@@ -252,7 +264,7 @@ class AudioCaptureGUI(ctk.CTk):
             self.equalizer_control_queue.put(message)
 
     def update_frequency_bands(self, value):
-        if self.canvas_thread:
+        if self.canvas_thread or self.equalizer_opengl_thread:
             message = {
                 "type": "set_frequency_bands",
                 "value": int(value)
@@ -296,6 +308,18 @@ class AudioCaptureGUI(ctk.CTk):
             self.canvas_thread.stop()
             self.canvas_thread = None
 
+    def fullscreen_command(self):
+        if self.canvas_thread and self.canvas_thread.is_alive():
+            self.canvas_thread.stop()
+            self.canvas_thread = None
+
+        if self.audio_thread:
+            self.equalizer_opengl_thread = EqualizerOpenGLThread(self.audio_queue,
+                                                                 noise_threshold=self.noise_slider.get_value(),
+                                                                 n_bands=int(self.frequency_slider.get_value()),
+                                                                 control_queue=self.equalizer_control_queue)
+            self.equalizer_opengl_thread.start()
+
     def on_resize(self, _, widgets: dict[str, ctk.CTkBaseClass]):
         for widget_name, widget in widgets.items():
             widget.update_idletasks()
@@ -332,6 +356,12 @@ class AudioCaptureGUI(ctk.CTk):
         if self.audio_thread:
             self.audio_thread.stop()
             while self.audio_thread.is_alive():
+                self.audio_thread.join(timeout=0.1)
+                self.update()
+
+        if self.equalizer_opengl_thread:
+            self.equalizer_opengl_thread.stop()
+            while self.equalizer_opengl_thread.is_alive():
                 self.audio_thread.join(timeout=0.1)
                 self.update()
 
