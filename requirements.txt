@@ -4,3 +4,6 @@ scipy
 SoundCard
 customtkinter
 Pillow
+PyOpenGL
+PyOpenGL_accelerate
+glfw
