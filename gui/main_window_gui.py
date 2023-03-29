@@ -99,13 +99,13 @@ class AudioCaptureGUI(ctk.CTk):
                                               header_name='Alpha amount:',
                                               command=self.update_alpha,
                                               initial_value=self.bg_alpha)
-        self.alpha_slider.pack(side=tk.TOP, padx=10, pady=10, fill=tk.X, expand=False)
+        self.alpha_slider.pack(side=tk.TOP, padx=10, pady=5, fill=tk.X, expand=False)
 
-        # Create slider widget for noise threshold
+        # noise threshold slider 
         self.noise_slider = SliderCustomFrame(settings_frame,
                                               header_name='Noise threshold:',
                                               command=self.update_noise_threshold)
-        self.noise_slider.pack(side=tk.TOP, padx=10, pady=10, fill=tk.X, expand=False)
+        self.noise_slider.pack(side=tk.TOP, padx=10, pady=5, fill=tk.X, expand=False)
 
         # Bands number
         self.frequency_slider = SliderCustomFrame(settings_frame,
@@ -115,7 +115,7 @@ class AudioCaptureGUI(ctk.CTk):
                                               to=32,
                                               steps=32,
                                               initial_value=INITIAL_FREQUENCIES_BANDS)
-        self.frequency_slider.pack(side=tk.TOP, padx=10, pady=10, fill=tk.X, expand=False)
+        self.frequency_slider.pack(side=tk.TOP, padx=10, pady=5, fill=tk.X, expand=False)
 
         # Create right frame
         right_frame = ctk.CTkFrame(self, border_width=2)

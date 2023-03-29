@@ -33,7 +33,7 @@ class SliderCustomFrame(tk.CTkFrame):
         slider.pack(side=tk.LEFT, fill=tk.X, expand=True)
 
         self._value_text = tk.CTkLabel(self, text=str(self.slider_value.get()))
-        self._value_text.pack(side=tk.LEFT, expand=False)
+        self._value_text.pack(side=tk.LEFT, expand=False, padx=5)
 
     def _combine_funcs(self, *funcs):
         """
