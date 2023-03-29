@@ -288,16 +288,18 @@ class AudioCaptureGUI(ctk.CTk):
         """
         Start the equalizer thread when the start button is pressed
         """
-        if self.audio_thread and not self.canvas_thread:
-            # Start the OpenGL window in a new thread
-            self.canvas_thread = EqualizerTkinterThread(
-                self.audio_queue,
-                noise_threshold=self.noise_slider.get_value(),
-                n_bands=int(self.frequency_slider.get_value()),
-                canvas=self.equalizer_canvas,
-                control_queue=self.equalizer_control_queue)
+        if not self.canvas_thread and not self.equalizer_opengl_thread:
+            if self.audio_thread:
+                # Start the OpenGL window in a new thread
+                self.canvas_thread = EqualizerTkinterThread(
+                    self.audio_queue,
+                    noise_threshold=self.noise_slider.get_value(),
+                    n_bands=int(self.frequency_slider.get_value()),
+                    canvas=self.equalizer_canvas,
+                    control_queue=self.equalizer_control_queue)
 
-            self.canvas_thread.start()
+            else:
+                self.show_no_audio_thread_warning()
 
     def stop_capture(self):
         """
@@ -319,6 +321,11 @@ class AudioCaptureGUI(ctk.CTk):
                                                                  n_bands=int(self.frequency_slider.get_value()),
                                                                  control_queue=self.equalizer_control_queue)
             self.equalizer_opengl_thread.start()
+        else:
+            self.show_no_audio_thread_warning()
+
+    def show_no_audio_thread_warning(self):
+        tk.messagebox.showwarning("Warning", "Select a device first!")
 
     def on_resize(self, _, widgets: dict[str, ctk.CTkBaseClass]):
         for widget_name, widget in widgets.items():

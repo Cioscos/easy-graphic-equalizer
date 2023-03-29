@@ -32,6 +32,7 @@ class EqualizerOpenGLThread(threading.Thread):
             [0, 0], [1, 0], [1, 1],
             [0, 0], [1, 1], [0, 1]
         ], dtype=np.float32)
+        
         self.stop_event = threading.Event()
 
     def generate_frequency_bands(self, num_bands):
@@ -99,7 +100,7 @@ class EqualizerOpenGLThread(threading.Thread):
         elif message['type'] == 'set_frequency_bands':
             self.frequency_bands = self.generate_frequency_bands(message["value"])
             self.previous_amplitudes = [0] * len(self.frequency_bands)
-            
+
             # Clear and reinitialize VBOs
             glDeleteBuffers(len(self.vbos), self.vbos)
             self.init_vbos()
