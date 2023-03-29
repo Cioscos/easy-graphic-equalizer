@@ -242,11 +242,22 @@ class AudioCaptureGUI(ctk.CTk):
 
             # Check if the device was already selected
             if (self.last_device_selected != device):
+                if self.audio_queue:
+                    self.audio_queue = None
+
+                self.stop_audio_thread()
+
                 self.audio_queue = queue.Queue(maxsize=MAX_QUEUE_SIZE)
                 self.audio_thread = AudioCaptureThread(
                     self.audio_queue, device=device)
                 self.audio_thread.start()
                 self.last_device_selected = device
+
+    def stop_audio_thread(self):
+        if self.audio_thread:
+            self.audio_thread.stop()
+            while self.audio_thread.is_alive():
+                self.audio_thread.join(timeout=0.1)
 
     def update_noise_threshold(self, value):
         """
