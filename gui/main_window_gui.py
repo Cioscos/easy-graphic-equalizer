@@ -342,9 +342,9 @@ class AudioCaptureGUI(ctk.CTk):
             self.is_on_start = True
 
     def fullscreen_command(self):
-        if self.canvas_thread and self.canvas_thread.is_alive():
-            self.canvas_thread.stop()
-            self.canvas_thread = None
+        self.stop_capture()
+        self.is_on_start = True
+        self.start_stop_button.configure(fg_color='green')
 
         if self.audio_thread:
             self.equalizer_opengl_thread = EqualizerOpenGLThread(self.audio_queue,
