@@ -78,10 +78,11 @@ class SliderCustomFrame(tk.CTkFrame):
         """
         self._value_text.configure(text=str(round(self.get_value(), 2)))
 
-        if self._warning_trigger_value <= self.slider_value.get():
-            self.warning_label.pack()
-        else:
-            self.warning_label.pack_forget()
+        if self._warning_trigger_value:
+            if self._warning_trigger_value <= self.slider_value.get():
+                self.warning_label.pack()
+            else:
+                self.warning_label.pack_forget()
 
     def get_value(self) -> float:
         """
