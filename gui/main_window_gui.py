@@ -62,7 +62,8 @@ class AudioCaptureGUI(ctk.CTk):
         device_listbox_frame = ctk.CTkFrame(device_frame)
         device_listbox_frame.pack(fill=ctk.BOTH, expand=True)
 
-        self.device_listbox = tk.Listbox(device_listbox_frame, width=40, font=("Roboto", 12), bg="#fff", fg="#333")
+        # self.device_listbox = tk.Listbox(device_listbox_frame, width=40, font=("Roboto", 12), bg="#fff", fg="#333")
+        self.device_listbox = tk.Listbox(device_listbox_frame, width=40, font=("Roboto", 12), bg="#5a5a5a")#, fg="#333")
         self.device_listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         scrollbar = ctk.CTkScrollbar(device_listbox_frame, orientation="vertical", command=self.device_listbox.yview)
         scrollbar.pack(side=ctk.RIGHT, fill=ctk.Y)
@@ -112,7 +113,7 @@ class AudioCaptureGUI(ctk.CTk):
                                               header_name='Frequency bands:',
                                               command=self.update_frequency_bands,
                                               from_=1,
-                                              to=32,
+                                              to=100,
                                               steps=32,
                                               initial_value=INITIAL_FREQUENCIES_BANDS,
                                               warning_trigger_value=15,
@@ -303,6 +304,11 @@ class AudioCaptureGUI(ctk.CTk):
         Change the tkinter theme
         """
         ctk.set_appearance_mode(new_appearance_mode)
+
+        if ctk.get_appearance_mode().lower() == 'dark':
+            self.device_listbox.configure(bg="#5a5a5a")
+        else:
+            self.device_listbox.configure(bg='#fff')
 
     def start_capture(self):
         """
