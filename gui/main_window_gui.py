@@ -51,22 +51,21 @@ class AudioCaptureGUI(ctk.CTk):
 
         # create left frame
         left_frame = ctk.CTkFrame(self, border_width=2)
-        left_frame.pack(side=ctk.LEFT, padx=10, pady=10, fill=ctk.Y)
+        left_frame.pack(side=ctk.LEFT, padx=10, pady=10, fill=ctk.BOTH)
 
         # Create device frame
         device_frame = ctk.CTkFrame(left_frame)
-        device_frame.pack(padx=5, pady=5, anchor='n')
+        device_frame.pack(padx=5, pady=5, anchor='n', fill=ctk.X)
         ctk.CTkLabel(device_frame, text="Select device:", font=("Roboto", 14)).pack(pady=5)
 
         # Create the listbox frame
         device_listbox_frame = ctk.CTkFrame(device_frame)
         device_listbox_frame.pack(fill=ctk.BOTH, expand=True)
 
-        # self.device_listbox = tk.Listbox(device_listbox_frame, width=40, font=("Roboto", 12), bg="#fff", fg="#333")
-        self.device_listbox = tk.Listbox(device_listbox_frame, width=40, font=("Roboto", 12), bg="#5a5a5a")#, fg="#333")
-        self.device_listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        self.device_listbox = tk.Listbox(device_listbox_frame, width=40, font=("Roboto", 12), bg="#5a5a5a")
+        self.device_listbox.pack(side=ctk.LEFT, fill=ctk.BOTH, expand=True)
         scrollbar = ctk.CTkScrollbar(device_listbox_frame, orientation="vertical", command=self.device_listbox.yview)
-        scrollbar.pack(side=ctk.RIGHT, fill=ctk.Y)
+        scrollbar.pack(side=ctk.LEFT)
         self.device_listbox.config(yscrollcommand=scrollbar.set)
         
         # Start the coroutine to retrieve the devices list
@@ -353,11 +352,12 @@ class AudioCaptureGUI(ctk.CTk):
         self.start_stop_button.configure(fg_color='green')
 
         if self.audio_thread:
-            self.equalizer_opengl_thread = EqualizerOpenGLThread(self.audio_queue,
-                                                                 noise_threshold=self.noise_slider.get_value(),
-                                                                 n_bands=int(self.frequency_slider.get_value()),
-                                                                 control_queue=self.equalizer_control_queue)
-            self.equalizer_opengl_thread.start()
+            if not self.equalizer_opengl_thread:
+                self.equalizer_opengl_thread = EqualizerOpenGLThread(self.audio_queue,
+                                                                    noise_threshold=self.noise_slider.get_value(),
+                                                                    n_bands=int(self.frequency_slider.get_value()),
+                                                                    control_queue=self.equalizer_control_queue)
+                self.equalizer_opengl_thread.start()
         else:
             self.show_no_audio_thread_warning()
 
@@ -377,7 +377,7 @@ class AudioCaptureGUI(ctk.CTk):
             if widget_name == 'equalizer_canvas':
                 if not self.resize_scheduled:
                     self.resize_scheduled = True
-                    self.after(200, self.resize_background, widget)
+                    self.after(500, self.resize_background, widget)
 
     def resize_background(self, canvas: tk.Canvas):
         self.canvas_width, self.canvas_height = canvas.winfo_width(), canvas.winfo_height()
