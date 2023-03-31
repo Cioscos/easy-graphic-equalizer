@@ -123,6 +123,10 @@ class EqualizerOpenGLThread(threading.Thread):
 
             self._bg_alpha = message['value']
             self.update_texture_alpha()
+        elif message_type == 'set_image':
+
+            self._bg_image = message['value']
+            self._background_texture = self.load_texture()
 
     def run(self):
         if not glfw.init():
@@ -133,6 +137,10 @@ class EqualizerOpenGLThread(threading.Thread):
         if not window:
             glfw.terminate()
             raise Exception("GLFW window creation failed")
+        
+        # check if the stop event is set
+        if self.stop_event.is_set():
+            self.stop_event.clear()
 
         glfw.make_context_current(window)
 

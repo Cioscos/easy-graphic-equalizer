@@ -208,6 +208,7 @@ class AudioCaptureGUI(ctk.CTk):
         self.bg_img_used = self.bg_img.copy()
         self.bg_img_used.putalpha(int(255 * self.bg_alpha))
         self.apply_background()
+        self.update_bg_opengl(self.bg_img)
 
     def apply_background(self):
         self.equalizer_canvas.update_idletasks()
@@ -296,6 +297,14 @@ class AudioCaptureGUI(ctk.CTk):
             }
             self.equalizer_control_queue.put(message)
 
+    def update_bg_opengl(self, image: Image.Image):
+        if self.equalizer_opengl_thread:
+            message = {
+                "type": "set_image",
+                "value": image
+            }
+            self.equalizer_control_queue.put(message)
+
     def update_alpha(self, value):
         self.bg_alpha = value
         self.bg_img_used.putalpha(int(255 * self.bg_alpha))
@@ -360,13 +369,13 @@ class AudioCaptureGUI(ctk.CTk):
         self.start_stop_button.configure(fg_color='green')
 
         if self.audio_thread:
-            if not self.equalizer_opengl_thread:
-                self.equalizer_opengl_thread = EqualizerOpenGLThread(self.audio_queue,
-                                                                    noise_threshold=self.noise_slider.get_value(),
-                                                                    n_bands=int(self.frequency_slider.get_value()),
-                                                                    control_queue=self.equalizer_control_queue,
-                                                                    bg_image=self.bg_img)
-                self.equalizer_opengl_thread.start()
+            self.equalizer_opengl_thread = EqualizerOpenGLThread(self.audio_queue,
+                                                                noise_threshold=self.noise_slider.get_value(),
+                                                                n_bands=int(self.frequency_slider.get_value()),
+                                                                control_queue=self.equalizer_control_queue,
+                                                                bg_image=self.bg_img)
+            
+            self.equalizer_opengl_thread.start()
         else:
             self.show_no_audio_thread_warning()
 
