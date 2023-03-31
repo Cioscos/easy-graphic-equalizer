@@ -1,11 +1,13 @@
 import threading
 import math
 import time
+from typing import Optional
 
 import glfw
 from OpenGL.GL import *
 import numpy as np
 import scipy.fftpack as fft_pack
+from PIL import Image
 
 RATE = 44100
 FRAME_RATE = 144
@@ -15,16 +17,25 @@ MAX_FREQ = 20000
 
 
 class EqualizerOpenGLThread(threading.Thread):
-    def __init__(self, audio_queue, noise_threshold=0.1, channels=2, n_bands=9, control_queue=None):
+    def __init__(self,
+                 audio_queue,
+                 noise_threshold=0.1,
+                 channels=2,
+                 n_bands=9,
+                 control_queue=None,
+                 bg_image: Optional[Image.Image]= None,
+                 bg_alpha: Optional[float]=None):
         super().__init__()
-        self.audio_queue = audio_queue
-        self.control_queue = control_queue
-        self.noise_threshold = noise_threshold
-        self.channels = channels
-        self.n_bands = n_bands
+        self._audio_queue = audio_queue
+        self._control_queue = control_queue
+        self._noise_threshold = noise_threshold
+        self._channels = channels
+        self._n_bands = n_bands
+        self._bg_image = bg_image
+        self._bg_alpha = bg_alpha
 
         # List of temporary amplitudes to create an animation effect
-        self.frequency_bands = self.generate_frequency_bands(self.n_bands)
+        self.frequency_bands = self.generate_frequency_bands(self._n_bands)
 
         self.previous_amplitudes = [0] * len(self.frequency_bands)
         self.vbos = []
@@ -34,6 +45,7 @@ class EqualizerOpenGLThread(threading.Thread):
         ], dtype=np.float32)
         
         self.stop_event = threading.Event()
+        self._background_texture = None
 
     def generate_frequency_bands(self, num_bands):
         min_log_freq = np.log10(MIN_FREQ)
@@ -95,15 +107,26 @@ class EqualizerOpenGLThread(threading.Thread):
             self.vbos.append(vbo)
 
     def process_control_message(self, message):
-        if message["type"] == "set_noise_threshold":
-            self.noise_threshold = message["value"]
-        elif message['type'] == 'set_frequency_bands':
+        message_type = message["type"]
+
+        if message_type == "set_noise_threshold":
+
+            self._noise_threshold = message["value"]
+        elif message_type == 'set_frequency_bands':
+
             self.frequency_bands = self.generate_frequency_bands(message["value"])
             self.previous_amplitudes = [0] * len(self.frequency_bands)
-
             # Clear and reinitialize VBOs
             glDeleteBuffers(len(self.vbos), self.vbos)
             self.init_vbos()
+        elif message_type == 'set_alpha':
+
+            self._bg_alpha = message['value']
+            self.update_texture_alpha()
+        elif message_type == 'set_image':
+
+            self._bg_image = message['value']
+            self._background_texture = self.load_texture()
 
     def run(self):
         if not glfw.init():
@@ -114,8 +137,19 @@ class EqualizerOpenGLThread(threading.Thread):
         if not window:
             glfw.terminate()
             raise Exception("GLFW window creation failed")
+        
+        # check if the stop event is set
+        if self.stop_event.is_set():
+            self.stop_event.clear()
 
         glfw.make_context_current(window)
+
+        # Enable blending
+        glEnable(GL_BLEND)
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
+
+        # Load the background texture after creating the OpenGL context
+        self._background_texture = self.load_texture()
 
         # Disable auto iconify
         glfw.set_window_attrib(window, glfw.AUTO_ICONIFY, glfw.FALSE)
@@ -133,19 +167,19 @@ class EqualizerOpenGLThread(threading.Thread):
 
         while not glfw.window_should_close(window) and not self.stop_event.is_set():
             # Process messages from the control queue
-            while not self.control_queue.empty():
-                message = self.control_queue.get(block=False)
+            while not self._control_queue.empty():
+                message = self._control_queue.get(block=False)
                 self.process_control_message(message)
 
             current_time = time.time()
             elapsed_time = current_time - previous_time
 
             # Consume data from the queue and update the audio buffer
-            while not self.audio_queue.empty():
-                audio_buffer = self.audio_queue.get(block=False)
+            while not self._audio_queue.empty():
+                audio_buffer = self._audio_queue.get(block=False)
 
             if audio_buffer is not None:
-                amplitudes = self.create_equalizer(audio_buffer, self.frequency_bands, self.noise_threshold, self.channels)
+                amplitudes = self.create_equalizer(audio_buffer, self.frequency_bands, self._noise_threshold, self._channels)
 
                 # exponential smoothing
                 smooth_factor = 1 - math.exp(-elapsed_time / (frame_duration * 5))
@@ -170,6 +204,48 @@ class EqualizerOpenGLThread(threading.Thread):
             glfw.set_window_should_close(window, True)
             self.stop()
 
+    def update_texture_alpha(self):
+        self._bg_image.putalpha(int(255 * self._bg_alpha))
+        self._background_texture = self.load_texture()
+
+    def load_texture(self):
+        im = self._bg_image.transpose(Image.FLIP_TOP_BOTTOM)
+        im_data = im.convert('RGBA').tobytes()
+
+        width, height = im.size
+
+        texture = glGenTextures(1)
+        glBindTexture(GL_TEXTURE_2D, texture)
+
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR)
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR)
+
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, im_data)
+
+        return texture
+    
+    def draw_background(self, window_width, window_height):
+        glBindTexture(GL_TEXTURE_2D, self._background_texture)
+
+        glEnable(GL_TEXTURE_2D)
+        glColor3f(1.0, 1.0, 1.0)  # Set the color to white so the texture is not tinted
+        glBegin(GL_QUADS)
+
+        glTexCoord2f(0, 0)
+        glVertex2f(0, 0)
+
+        glTexCoord2f(1, 0)
+        glVertex2f(window_width, 0)
+
+        glTexCoord2f(1, 1)
+        glVertex2f(window_width, window_height)
+
+        glTexCoord2f(0, 1)
+        glVertex2f(0, window_height)
+
+        glEnd()
+        glDisable(GL_TEXTURE_2D)
+
     def draw_bars(self, amplitudes, window, smooth_factor=0.1):
         window_width, window_height = glfw.get_framebuffer_size(window)
 
@@ -191,6 +267,8 @@ class EqualizerOpenGLThread(threading.Thread):
         glOrtho(0, window_width, 0, window_height, -1, 1)
         glMatrixMode(GL_MODELVIEW)
         glLoadIdentity()
+
+        self.draw_background(window_width, window_height)
 
         for i, amplitude in enumerate(amplitudes):
             # Bind the VBO
