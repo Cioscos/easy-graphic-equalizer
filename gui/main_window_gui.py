@@ -353,7 +353,8 @@ class AudioCaptureGUI(ctk.CTk):
                 self.equalizer_opengl_thread = EqualizerOpenGLThread(self.audio_queue,
                                                                     noise_threshold=self.noise_slider.get_value(),
                                                                     n_bands=int(self.frequency_slider.get_value()),
-                                                                    control_queue=self.equalizer_control_queue)
+                                                                    control_queue=self.equalizer_control_queue,
+                                                                    bg_image=self.bg_img)
                 self.equalizer_opengl_thread.start()
         else:
             self.show_no_audio_thread_warning()
