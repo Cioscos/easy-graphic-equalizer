@@ -23,7 +23,8 @@ class EqualizerOpenGLThread(threading.Thread):
                  channels=2,
                  n_bands=9,
                  control_queue=None,
-                 bg_image: Optional[Image.Image]= None):
+                 bg_image: Optional[Image.Image]= None,
+                 bg_alpha: Optional[float]=None):
         super().__init__()
         self._audio_queue = audio_queue
         self._control_queue = control_queue
@@ -31,6 +32,7 @@ class EqualizerOpenGLThread(threading.Thread):
         self._channels = channels
         self._n_bands = n_bands
         self._bg_image = bg_image
+        self._bg_alpha = bg_alpha
 
         # List of temporary amplitudes to create an animation effect
         self.frequency_bands = self.generate_frequency_bands(self._n_bands)
@@ -43,6 +45,7 @@ class EqualizerOpenGLThread(threading.Thread):
         ], dtype=np.float32)
         
         self.stop_event = threading.Event()
+        self._background_texture = None
 
     def generate_frequency_bands(self, num_bands):
         min_log_freq = np.log10(MIN_FREQ)
@@ -104,15 +107,22 @@ class EqualizerOpenGLThread(threading.Thread):
             self.vbos.append(vbo)
 
     def process_control_message(self, message):
-        if message["type"] == "set_noise_threshold":
+        message_type = message["type"]
+
+        if message_type == "set_noise_threshold":
+
             self._noise_threshold = message["value"]
-        elif message['type'] == 'set_frequency_bands':
+        elif message_type == 'set_frequency_bands':
+
             self.frequency_bands = self.generate_frequency_bands(message["value"])
             self.previous_amplitudes = [0] * len(self.frequency_bands)
-
             # Clear and reinitialize VBOs
             glDeleteBuffers(len(self.vbos), self.vbos)
             self.init_vbos()
+        elif message_type == 'set_alpha':
+
+            self._bg_alpha = message['value']
+            self.update_texture_alpha()
 
     def run(self):
         if not glfw.init():
@@ -125,6 +135,10 @@ class EqualizerOpenGLThread(threading.Thread):
             raise Exception("GLFW window creation failed")
 
         glfw.make_context_current(window)
+
+        # Enable blending
+        glEnable(GL_BLEND)
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
 
         # Load the background texture after creating the OpenGL context
         self._background_texture = self.load_texture()
@@ -181,6 +195,10 @@ class EqualizerOpenGLThread(threading.Thread):
         if key == glfw.KEY_ESCAPE and action == glfw.PRESS:
             glfw.set_window_should_close(window, True)
             self.stop()
+
+    def update_texture_alpha(self):
+        self._bg_image.putalpha(int(255 * self._bg_alpha))
+        self._background_texture = self.load_texture()
 
     def load_texture(self):
         im = self._bg_image.transpose(Image.FLIP_TOP_BOTTOM)

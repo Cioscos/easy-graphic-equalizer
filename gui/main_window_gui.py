@@ -288,12 +288,23 @@ class AudioCaptureGUI(ctk.CTk):
             }
             self.equalizer_control_queue.put(message)
 
+    def update_alpha_opengl(self, value):
+        if self.equalizer_opengl_thread:
+            message = {
+                "type": "set_alpha",
+                "value": float(value)
+            }
+            self.equalizer_control_queue.put(message)
+
     def update_alpha(self, value):
         self.bg_alpha = value
         self.bg_img_used.putalpha(int(255 * self.bg_alpha))
         self.canvas_image = ImageTk.PhotoImage(self.bg_img_used)
         self.equalizer_canvas.create_image(0, 0, anchor=ctk.NW, image=self.canvas_image, tags='background')
         self.equalizer_canvas.tag_lower('background')
+
+        # send msg to opengl window if active
+        self.update_alpha_opengl(value)
 
     def change_appearance_mode_event(self, new_appearance_mode: str):
         """
