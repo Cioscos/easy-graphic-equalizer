@@ -1,7 +1,6 @@
 import queue
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
-import time
 
 import customtkinter as ctk
 import tkinter as tk
@@ -198,7 +197,6 @@ class AudioCaptureGUI(ctk.CTk):
     def get_canvas_size(self) -> tuple[int, int]:
         """
         Return the size of the equalizer_canvas
-
         Returns:
             tuple: width and height of the canvas
         """
@@ -272,7 +270,6 @@ class AudioCaptureGUI(ctk.CTk):
         """
         Update the noise threshold in the equalizer sending
         a message to the EqualizerTkinterThread
-
         Args:
             value (ctk.DoubleVar):A DoubleVar object to track the threshold value
         """
