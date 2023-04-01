@@ -4,6 +4,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 import customtkinter as ctk
 import tkinter as tk
+from CTkMessagebox import CTkMessagebox
 import soundcard as sc
 from PIL import Image, ImageTk
 
@@ -229,12 +230,9 @@ class AudioCaptureGUI(ctk.CTk):
     
     async def load_devices(self):
         self.devices = await self.get_devices()
-        for i, device in enumerate(self.devices):
-            self.device_listbox.insert(tk.END, f"{i}: {device}")
-
-    def update_devices_listbox(self):
-        for i, device in enumerate(self.devices):
-            self.device_listbox.insert(tk.END, f"{i}: {device['name']}")
+        for device in self.devices:
+            device = str(device).replace('<', '').replace('>', '')
+            self.device_listbox.insert(tk.END, f"{device}")
 
     def on_device_selected(self, _):
         """
@@ -388,7 +386,7 @@ class AudioCaptureGUI(ctk.CTk):
             self.help_window.focus()
 
     def show_no_audio_thread_warning(self):
-        tk.messagebox.showwarning("Warning", "Select a device first!")
+        CTkMessagebox(title='Info', message='Select a device first!')
 
     def on_resize(self, _, widgets: dict[str, ctk.CTkBaseClass]):
         for widget_name, widget in widgets.items():

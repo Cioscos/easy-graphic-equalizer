@@ -4,7 +4,9 @@ import customtkinter as ctk
 class HelpWindow(ctk.CTkToplevel):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.geometry("400x300")
+
+        self.geometry("500x500")
+
         self.title('Help')
 
         self.label = ctk.CTkLabel(self, text="How to use", font=("Roboto", 18, "bold"))
@@ -26,3 +28,6 @@ class HelpWindow(ctk.CTkToplevel):
                                  'Fullscreen button: Open a fullscreen window in which the bars are drawn. This window has high performance so it\'s ' \
                                  'suggested when you use high number of bands.')
         self.explaination.configure(state='disabled')
+
+        self.focus()
+        self.after(20, self.lift)
