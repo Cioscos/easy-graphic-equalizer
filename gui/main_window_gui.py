@@ -4,14 +4,17 @@ from concurrent.futures import ThreadPoolExecutor
 
 import customtkinter as ctk
 import tkinter as tk
+from CTkMessagebox import CTkMessagebox
 import soundcard as sc
 from PIL import Image, ImageTk
 
 from thread.audioCaptureThread import AudioCaptureThread
 from thread.equalizer_tkinter_thread import EqualizerTkinterThread
+from thread.opengl_thread import EqualizerOpenGLThread
 from gui.slider_frame import SliderCustomFrame
 from gui.optionmenu_frame import OptionMenuCustomFrame
 from gui.background_filepicker_frame import BackgroundFilepickerFrame
+from gui.help_window import HelpWindow
 from resource_manager import ResourceManager
 
 MAX_QUEUE_SIZE = 200
@@ -48,21 +51,21 @@ class AudioCaptureGUI(ctk.CTk):
 
         # create left frame
         left_frame = ctk.CTkFrame(self, border_width=2)
-        left_frame.pack(side=ctk.LEFT, padx=10, pady=10, fill=ctk.Y)
+        left_frame.pack(side=ctk.LEFT, padx=10, pady=10, fill=ctk.BOTH)
 
         # Create device frame
         device_frame = ctk.CTkFrame(left_frame)
-        device_frame.pack(padx=5, pady=5, anchor='n')
+        device_frame.pack(padx=5, pady=5, anchor='n', fill=ctk.X)
         ctk.CTkLabel(device_frame, text="Select device:", font=("Roboto", 14)).pack(pady=5)
 
         # Create the listbox frame
         device_listbox_frame = ctk.CTkFrame(device_frame)
         device_listbox_frame.pack(fill=ctk.BOTH, expand=True)
 
-        self.device_listbox = tk.Listbox(device_listbox_frame, width=40, font=("Roboto", 12), bg="#fff", fg="#333")
-        self.device_listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        self.device_listbox = tk.Listbox(device_listbox_frame, width=40, font=("Roboto", 12), bg="#5a5a5a")
+        self.device_listbox.pack(side=ctk.LEFT, fill=ctk.BOTH, expand=True)
         scrollbar = ctk.CTkScrollbar(device_listbox_frame, orientation="vertical", command=self.device_listbox.yview)
-        scrollbar.pack(side=ctk.RIGHT, fill=ctk.Y)
+        scrollbar.pack(side=ctk.LEFT)
         self.device_listbox.config(yscrollcommand=scrollbar.set)
         
         # Start the coroutine to retrieve the devices list
@@ -73,13 +76,7 @@ class AudioCaptureGUI(ctk.CTk):
         # Create settings frame
         settings_frame = ctk.CTkFrame(left_frame, border_width=2)
         settings_frame.pack(side=tk.BOTTOM, fill=tk.BOTH, expand=True)
-        ctk.CTkLabel(settings_frame, text="Settings", font=("Roboto", 18, "bold")).pack(side=tk.TOP)
-        
-        # Create slider widget for noise threshold
-        self.noise_slider = SliderCustomFrame(settings_frame,
-                                              header_name='Noise threshold:',
-                                              command=self.update_noise_threshold)
-        self.noise_slider.pack(side=tk.TOP, padx=10, pady=10, fill=tk.X, expand=False)
+        ctk.CTkLabel(settings_frame, text="Settings", font=("Roboto", 18, "bold")).pack(side=tk.TOP, padx=5, pady=5)
         
         # Create theme Option
         self.appearance_mode = OptionMenuCustomFrame(settings_frame,
@@ -102,17 +99,25 @@ class AudioCaptureGUI(ctk.CTk):
                                               header_name='Alpha amount:',
                                               command=self.update_alpha,
                                               initial_value=self.bg_alpha)
-        self.alpha_slider.pack(side=tk.TOP, padx=10, pady=10, fill=tk.X, expand=False)
+        self.alpha_slider.pack(side=tk.TOP, padx=10, pady=5, fill=tk.X, expand=False)
+
+        # noise threshold slider 
+        self.noise_slider = SliderCustomFrame(settings_frame,
+                                              header_name='Noise threshold:',
+                                              command=self.update_noise_threshold)
+        self.noise_slider.pack(side=tk.TOP, padx=10, pady=5, fill=tk.X, expand=False)
 
         # Bands number
         self.frequency_slider = SliderCustomFrame(settings_frame,
                                               header_name='Frequency bands:',
                                               command=self.update_frequency_bands,
                                               from_=1,
-                                              to=32,
+                                              to=100,
                                               steps=32,
-                                              initial_value=INITIAL_FREQUENCIES_BANDS)
-        self.frequency_slider.pack(side=tk.TOP, padx=10, pady=10, fill=tk.X, expand=False)
+                                              initial_value=INITIAL_FREQUENCIES_BANDS,
+                                              warning_trigger_value=15,
+                                              warning_text='The number of the bard could be too high.\nConsider to use the fullscreen view')
+        self.frequency_slider.pack(side=tk.TOP, padx=10, pady=5, fill=tk.X, expand=False)
 
         # Create right frame
         right_frame = ctk.CTkFrame(self, border_width=2)
@@ -126,7 +131,7 @@ class AudioCaptureGUI(ctk.CTk):
         self.equalizer_canvas = ctk.CTkCanvas(equalizer_frame, bg='#000')
 
         # load canvas bg image
-        self.bg_img = Image.open(self.resource_manager.get_image_path('glass.jpg', 'bg'))
+        self.bg_img = Image.open(self.resource_manager.get_image_path('bg (19).png', 'bg'))
         self.bg_img_used = self.bg_img.copy()
         self.bg_img_used.putalpha(int(255 * self.bg_alpha))
 
@@ -147,21 +152,33 @@ class AudioCaptureGUI(ctk.CTk):
         buttons_frame = ctk.CTkFrame(right_frame)
         buttons_frame.pack(side=tk.BOTTOM, fill=tk.X)
 
-        # Create start button
-        self.start_button = ctk.CTkButton(buttons_frame,
-                  text="Start",
-                  command=self.start_capture,
-                  font=("Roboto", 16),
-                  fg_color='green')
-        self.start_button.pack(side=tk.LEFT, padx=10, pady=10, fill=tk.X, expand=True)
+        # controls the state of the start/stop button.
+        self.is_on_start = True
 
-        # Create stop button
-        self.stop_button = ctk.CTkButton(buttons_frame,
-                                         text='Stop',
-                                         font=("Roboto", 16),
-                                         fg_color='red',
-                                         command=self.stop_capture)
-        self.stop_button.pack(side=tk.RIGHT, padx=10, pady=10, fill=tk.X, expand=True)
+        # Create start/stop button
+        self.start_stop_button = ctk.CTkButton(buttons_frame,
+                  text="Start/Pause",
+                  command=self.start_stop_capture,
+                  font=("Roboto", 16),
+                  fg_color='green',
+                  state='disabled')
+        self.start_stop_button.pack(padx=5, pady=5, fill=ctk.BOTH, side=tk.LEFT, expand=True)
+
+        self.fullscreen_icn = ctk.CTkImage(dark_image=Image.open(self.resource_manager.get_image_path('maximize.png', 'icons')))
+        self.fullscreen_btn = ctk.CTkButton(buttons_frame,
+                                            command=self.fullscreen_command,
+                                            image=self.fullscreen_icn,
+                                            text='Fullscreen',
+                                            font=("Roboto", 16))
+        self.fullscreen_btn.pack(padx=5, pady=5, fill=ctk.BOTH, side=tk.LEFT, expand=True)
+
+        help_icn = ctk.CTkImage(dark_image=Image.open(self.resource_manager.get_image_path('help.png', 'icons')))
+        help_button = ctk.CTkButton(buttons_frame,
+                                    command=self.open_help_window,
+                                    image=help_icn,
+                                    text='Help',
+                                    font=("Roboto", 16))
+        help_button.pack(padx=5, pady=5, fill=ctk.BOTH, side=tk.LEFT, expand=True)
 
         # BIND THE EVENT
         # Create a dictionary with all the widget to check in the on_resize callback
@@ -173,12 +190,14 @@ class AudioCaptureGUI(ctk.CTk):
         self.equalizer_control_queue = queue.Queue()
         self.audio_thread = None
         self.canvas_thread = None
+        self.equalizer_opengl_thread = None
         self.last_device_selected = None
+        self.resize_scheduled = False
+        self.help_window = None
 
     def get_canvas_size(self) -> tuple[int, int]:
         """
         Return the size of the equalizer_canvas
-
         Returns:
             tuple: width and height of the canvas
         """
@@ -190,6 +209,7 @@ class AudioCaptureGUI(ctk.CTk):
         self.bg_img_used = self.bg_img.copy()
         self.bg_img_used.putalpha(int(255 * self.bg_alpha))
         self.apply_background()
+        self.update_bg_opengl(self.bg_img)
 
     def apply_background(self):
         self.equalizer_canvas.update_idletasks()
@@ -210,12 +230,9 @@ class AudioCaptureGUI(ctk.CTk):
     
     async def load_devices(self):
         self.devices = await self.get_devices()
-        for i, device in enumerate(self.devices):
-            self.device_listbox.insert(tk.END, f"{i}: {device}")
-
-    def update_devices_listbox(self):
-        for i, device in enumerate(self.devices):
-            self.device_listbox.insert(tk.END, f"{i}: {device['name']}")
+        for device in self.devices:
+            device = str(device).replace('<', '').replace('>', '')
+            self.device_listbox.insert(tk.END, f"{device}")
 
     def on_device_selected(self, _):
         """
@@ -230,21 +247,32 @@ class AudioCaptureGUI(ctk.CTk):
 
             # Check if the device was already selected
             if (self.last_device_selected != device):
+                if self.audio_queue:
+                    self.audio_queue = None
+
+                self.stop_audio_thread()
+
                 self.audio_queue = queue.Queue(maxsize=MAX_QUEUE_SIZE)
                 self.audio_thread = AudioCaptureThread(
                     self.audio_queue, device=device)
                 self.audio_thread.start()
                 self.last_device_selected = device
+                self.start_stop_button.configure(state='normal')
+
+    def stop_audio_thread(self):
+        if self.audio_thread:
+            self.audio_thread.stop()
+            while self.audio_thread.is_alive():
+                self.audio_thread.join(timeout=0.1)
 
     def update_noise_threshold(self, value):
         """
         Update the noise threshold in the equalizer sending
         a message to the EqualizerTkinterThread
-
         Args:
             value (ctk.DoubleVar):A DoubleVar object to track the threshold value
         """
-        if self.canvas_thread:
+        if self.canvas_thread or self.equalizer_opengl_thread:
             message = {
                 "type": "set_noise_threshold",
                 "value": float(value)
@@ -252,10 +280,26 @@ class AudioCaptureGUI(ctk.CTk):
             self.equalizer_control_queue.put(message)
 
     def update_frequency_bands(self, value):
-        if self.canvas_thread:
+        if self.canvas_thread or self.equalizer_opengl_thread:
             message = {
                 "type": "set_frequency_bands",
                 "value": int(value)
+            }
+            self.equalizer_control_queue.put(message)
+
+    def update_alpha_opengl(self, value):
+        if self.equalizer_opengl_thread:
+            message = {
+                "type": "set_alpha",
+                "value": float(value)
+            }
+            self.equalizer_control_queue.put(message)
+
+    def update_bg_opengl(self, image: Image.Image):
+        if self.equalizer_opengl_thread:
+            message = {
+                "type": "set_image",
+                "value": image
             }
             self.equalizer_control_queue.put(message)
 
@@ -266,26 +310,37 @@ class AudioCaptureGUI(ctk.CTk):
         self.equalizer_canvas.create_image(0, 0, anchor=ctk.NW, image=self.canvas_image, tags='background')
         self.equalizer_canvas.tag_lower('background')
 
+        # send msg to opengl window if active
+        self.update_alpha_opengl(value)
+
     def change_appearance_mode_event(self, new_appearance_mode: str):
         """
         Change the tkinter theme
         """
         ctk.set_appearance_mode(new_appearance_mode)
 
+        if ctk.get_appearance_mode().lower() == 'dark':
+            self.device_listbox.configure(bg="#5a5a5a")
+        else:
+            self.device_listbox.configure(bg='#fff')
+
     def start_capture(self):
         """
         Start the equalizer thread when the start button is pressed
         """
-        if self.audio_thread and not self.canvas_thread:
-            # Start the OpenGL window in a new thread
-            self.canvas_thread = EqualizerTkinterThread(
-                self.audio_queue,
-                noise_threshold=self.noise_slider.get_value(),
-                n_bands=int(self.frequency_slider.get_value()),
-                canvas=self.equalizer_canvas,
-                control_queue=self.equalizer_control_queue)
+        if not self.canvas_thread and not self.equalizer_opengl_thread:
+            if self.audio_thread:
+                # Start the OpenGL window in a new thread
+                self.canvas_thread = EqualizerTkinterThread(
+                    self.audio_queue,
+                    noise_threshold=self.noise_slider.get_value(),
+                    n_bands=int(self.frequency_slider.get_value()),
+                    canvas=self.equalizer_canvas,
+                    control_queue=self.equalizer_control_queue)
+                self.canvas_thread.start()
 
-            self.canvas_thread.start()
+            else:
+                self.show_no_audio_thread_warning()
 
     def stop_capture(self):
         """
@@ -296,18 +351,59 @@ class AudioCaptureGUI(ctk.CTk):
             self.canvas_thread.stop()
             self.canvas_thread = None
 
+    def start_stop_capture(self):
+        if self.is_on_start:
+            self.start_stop_button.configure(fg_color='red')
+            self.start_capture()
+            self.is_on_start = False
+        else:
+            self.start_stop_button.configure(fg_color='green')
+            self.stop_capture()
+            self.is_on_start = True
+
+    def fullscreen_command(self):
+        self.stop_capture()
+        self.is_on_start = True
+        self.start_stop_button.configure(fg_color='green')
+
+        if self.audio_thread:
+            self.equalizer_opengl_thread = EqualizerOpenGLThread(self.audio_queue,
+                                                                noise_threshold=self.noise_slider.get_value(),
+                                                                n_bands=int(self.frequency_slider.get_value()),
+                                                                control_queue=self.equalizer_control_queue,
+                                                                bg_image=self.bg_img)
+            
+            self.equalizer_opengl_thread.start()
+        else:
+            self.show_no_audio_thread_warning()
+
+    def open_help_window(self):
+        if self.help_window is None or not self.help_window.winfo_exists():
+            self.help_window = HelpWindow(self)
+            self.help_window.focus()
+            self.help_window.after(20, self.help_window.lift)
+        else:
+            self.help_window.focus()
+
+    def show_no_audio_thread_warning(self):
+        CTkMessagebox(title='Info', message='Select a device first!')
+
     def on_resize(self, _, widgets: dict[str, ctk.CTkBaseClass]):
         for widget_name, widget in widgets.items():
-            widget.update_idletasks()
             if widget_name == 'equalizer_canvas':
-                self.canvas_width, self.canvas_height = widget.winfo_width(), widget.winfo_height()
-                if self.canvas_height != self.bg_img_used.height or self.canvas_width != self.bg_img_used.width:
-                    # Resize the image using the resize() method starting from the original image
-                    self.bg_img_used = self.bg_img.resize((self.canvas_width, self.canvas_height), Image.ANTIALIAS).copy()
-                    self.bg_img_used.putalpha(int(255 * self.bg_alpha))
-                    self.canvas_image = ImageTk.PhotoImage(self.bg_img_used)
-                    self.equalizer_canvas.create_image(0, 0, anchor=ctk.NW, image=self.canvas_image, tags='background')
-                    self.equalizer_canvas.tag_lower('background')
+                if not self.resize_scheduled:
+                    self.resize_scheduled = True
+                    self.after(500, self.resize_background, widget)
+
+    def resize_background(self, canvas: tk.Canvas):
+        self.canvas_width, self.canvas_height = canvas.winfo_width(), canvas.winfo_height()
+        # Resize the image using the resize() method starting from the original image
+        self.bg_img_used = self.bg_img.resize((self.canvas_width, self.canvas_height), Image.ANTIALIAS).copy()
+        self.bg_img_used.putalpha(int(255 * self.bg_alpha))
+        self.canvas_image = ImageTk.PhotoImage(self.bg_img_used)
+        self.equalizer_canvas.create_image(0, 0, anchor=ctk.NW, image=self.canvas_image, tags='background')
+        self.equalizer_canvas.tag_lower('background') 
+        self.resize_scheduled = False
 
     def run(self):
         """
@@ -332,6 +428,12 @@ class AudioCaptureGUI(ctk.CTk):
         if self.audio_thread:
             self.audio_thread.stop()
             while self.audio_thread.is_alive():
+                self.audio_thread.join(timeout=0.1)
+                self.update()
+
+        if self.equalizer_opengl_thread:
+            self.equalizer_opengl_thread.stop()
+            while self.equalizer_opengl_thread.is_alive():
                 self.audio_thread.join(timeout=0.1)
                 self.update()
 

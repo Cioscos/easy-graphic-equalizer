@@ -3,4 +3,8 @@ numpy
 scipy
 SoundCard
 customtkinter
+CTkMessagebox
 Pillow
+PyOpenGL
+PyOpenGL_accelerate
+glfw

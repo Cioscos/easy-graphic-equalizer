@@ -14,15 +14,25 @@ class SliderCustomFrame(tk.CTkFrame):
                  to: int = 1,
                  steps: Optional[int] = None,
                  command: Optional[Callable] = None,
+                 warning_text: Optional[str] = None,
+                 warning_trigger_value: Optional[int] = None,
                  **kwargs):
         super().__init__(*args, **kwargs)
 
-        header = tk.CTkLabel(self, text=header_name)
-        header.pack(side=tk.LEFT, padx=10)
+        if warning_trigger_value and not warning_text:
+            raise Exception('No warning text with when warning_trigger_value set')
+        
+        self._warning_trigger_value = warning_trigger_value
 
         self.slider_value = tk.DoubleVar(value=initial_value)
 
-        slider = tk.CTkSlider(self,
+        slider_frame = tk.CTkFrame(self)
+        slider_frame.pack(expand=True, fill=tk.X, pady=2)
+
+        header = tk.CTkLabel(slider_frame, text=header_name)
+        header.pack(side=tk.LEFT, padx=10)
+
+        slider = tk.CTkSlider(slider_frame,
                  from_=from_,
                  to=to,
                  orientation=tk.HORIZONTAL,
@@ -32,8 +42,19 @@ class SliderCustomFrame(tk.CTkFrame):
                  )
         slider.pack(side=tk.LEFT, fill=tk.X, expand=True)
 
-        self._value_text = tk.CTkLabel(self, text=str(self.slider_value.get()))
-        self._value_text.pack(side=tk.LEFT, expand=False)
+        self._value_text = tk.CTkLabel(slider_frame, text=str(self.slider_value.get()))
+        self._value_text.pack(side=tk.LEFT, expand=False, padx=5)
+
+        # Warning message
+        self.warning_label = tk.CTkLabel(self,
+                                text=warning_text,
+                                font=("Roboto", 12),
+                                text_color='yellow',
+                                justify='center')
+
+        # 'The number of the bard could be too high. Consider to use the fullscreen view'
+        if warning_trigger_value and self.slider_value.get() >= warning_trigger_value:
+            self.warning_label.pack()
 
     def _combine_funcs(self, *funcs):
         """
@@ -53,10 +74,15 @@ class SliderCustomFrame(tk.CTkFrame):
 
     def _update_value_text(self, _):
         """
-        Update the text box every update of the slider
+        Update the text box every update of the slider and eventually shows warning
         """
         self._value_text.configure(text=str(round(self.get_value(), 2)))
 
+        if self._warning_trigger_value:
+            if self._warning_trigger_value <= self.slider_value.get():
+                self.warning_label.pack()
+            else:
+                self.warning_label.pack_forget()
 
     def get_value(self) -> float:
         """
