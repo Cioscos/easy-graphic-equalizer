@@ -131,7 +131,7 @@ class AudioCaptureGUI(ctk.CTk):
         self.equalizer_canvas = ctk.CTkCanvas(equalizer_frame, bg='#000')
 
         # load canvas bg image
-        self.bg_img = Image.open(self.resource_manager.get_image_path('glass.jpg', 'bg'))
+        self.bg_img = Image.open(self.resource_manager.get_image_path('bg (19).png', 'bg'))
         self.bg_img_used = self.bg_img.copy()
         self.bg_img_used.putalpha(int(255 * self.bg_alpha))
 

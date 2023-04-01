@@ -1,4 +1,6 @@
 .venv
 .vscode
 __pycache__
-./output
+output/
+glfw3.dll
+py-to-exe-settings.json
