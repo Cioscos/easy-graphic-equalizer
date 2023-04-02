@@ -2,5 +2,3 @@
 .vscode
 __pycache__
 output/
-glfw3.dll
-py-to-exe-settings.json
