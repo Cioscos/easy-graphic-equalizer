@@ -10,7 +10,6 @@ import scipy.fftpack as fft_pack
 from PIL import Image
 
 RATE = 44100
-FRAME_RATE = 144
 N_FFT= 8192
 MIN_FREQ = 20
 MAX_FREQ = 20000
@@ -48,6 +47,7 @@ class EqualizerOpenGLThread(threading.Thread):
         self._background_texture = None
 
         self.window_width = self.window_height = None
+        self.frame_rate = None
 
     def generate_frequency_bands(self, num_bands):
         min_log_freq = np.log10(MIN_FREQ)
@@ -135,7 +135,14 @@ class EqualizerOpenGLThread(threading.Thread):
             raise Exception("GLFW initialization failed")
 
         primary_monitor = glfw.get_primary_monitor()
-        window = glfw.create_window(1920, 1080, "Audio Visualizer", primary_monitor, None)
+        
+            # Get the primary monitor's video mode
+        video_mode = glfw.get_video_mode(primary_monitor)
+        self.window_width = video_mode.size.width
+        self.window_height = video_mode.size.height
+        self.frame_rate = video_mode.refresh_rate
+
+        window = glfw.create_window(self.window_width, self.window_height, "Audio Visualizer", primary_monitor, None)
         if not window:
             glfw.terminate()
             raise Exception("GLFW window creation failed")
@@ -164,9 +171,7 @@ class EqualizerOpenGLThread(threading.Thread):
         # initialize audio buffer
         audio_buffer = None
 
-        self.window_width, self.window_height = glfw.get_framebuffer_size(window)
-
-        frame_duration = 1 / FRAME_RATE
+        frame_duration = 1 / self.frame_rate
         previous_time = time.time()
 
         while not glfw.window_should_close(window) and not self.stop_event.is_set():
@@ -188,7 +193,7 @@ class EqualizerOpenGLThread(threading.Thread):
                 # exponential smoothing
                 smooth_factor = 1 - math.exp(-elapsed_time / (frame_duration * 5))
                 # Render the bars using OpenGL
-                self.draw_bars(amplitudes, window, smooth_factor)
+                self.draw_bars(amplitudes, smooth_factor)
 
             previous_time = current_time
             glfw.swap_buffers(window)
@@ -228,7 +233,7 @@ class EqualizerOpenGLThread(threading.Thread):
 
         return texture
     
-    def draw_background(self, window_width, window_height):
+    def draw_background(self):
         glBindTexture(GL_TEXTURE_2D, self._background_texture)
 
         glEnable(GL_TEXTURE_2D)
@@ -239,40 +244,34 @@ class EqualizerOpenGLThread(threading.Thread):
         glVertex2f(0, 0)
 
         glTexCoord2f(1, 0)
-        glVertex2f(window_width, 0)
+        glVertex2f(self.window_width, 0)
 
         glTexCoord2f(1, 1)
-        glVertex2f(window_width, window_height)
+        glVertex2f(self.window_width, self.window_height)
 
         glTexCoord2f(0, 1)
-        glVertex2f(0, window_height)
+        glVertex2f(0, self.window_height)
 
         glEnd()
         glDisable(GL_TEXTURE_2D)
 
-    def draw_bars(self, amplitudes, window, smooth_factor=0.1):
-        window_width, window_height = glfw.get_framebuffer_size(window)
-
-        # Return early if the window dimensions are invalid
-        if window_width == 0 or window_height == 0:
-            return
+    def draw_bars(self, amplitudes, smooth_factor=0.1):
         
         glClearColor(0, 0, 0, 1)
         glClear(GL_COLOR_BUFFER_BIT)
 
         num_bars = len(amplitudes)
-        window_width, window_height = glfw.get_framebuffer_size(window)
-        total_bar_width = window_width / num_bars
+        total_bar_width = self.window_width / num_bars
         bar_width = total_bar_width * 0.8
         bar_spacing = total_bar_width * 0.2
 
         glMatrixMode(GL_PROJECTION)
         glLoadIdentity()
-        glOrtho(0, window_width, 0, window_height, -1, 1)
+        glOrtho(0, self.window_width, 0, self.window_height, -1, 1)
         glMatrixMode(GL_MODELVIEW)
         glLoadIdentity()
 
-        self.draw_background(window_width, window_height)
+        self.draw_background()
 
         for i, amplitude in enumerate(amplitudes):
             # Bind the VBO
@@ -288,11 +287,11 @@ class EqualizerOpenGLThread(threading.Thread):
             y = 0
 
             # Calculate the total height of the bar based on the amplitude
-            total_height = interpolated_amplitude * window_height
+            total_height = interpolated_amplitude * self.window_height
 
             # Calculate the heights of the three color sections based on the total height
-            green_height = min(total_height, 0.5 * window_height)
-            yellow_height = min(max(total_height - green_height, 0), 0.3 * window_height)
+            green_height = min(total_height, 0.5 * self.window_height)
+            yellow_height = min(max(total_height - green_height, 0), 0.3 * self.window_height)
             red_height = max(total_height - green_height - yellow_height, 0)
 
             # Draw the green rectangle
