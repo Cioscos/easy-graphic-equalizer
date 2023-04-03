@@ -22,6 +22,7 @@ class EqualizerOpenGLThread(threading.Thread):
                  channels=2,
                  n_bands=9,
                  control_queue=None,
+                 monitor= None,
                  bg_image: Optional[Image.Image]= None,
                  bg_alpha: Optional[float]=None):
         super().__init__()
@@ -30,6 +31,7 @@ class EqualizerOpenGLThread(threading.Thread):
         self._noise_threshold = noise_threshold
         self._channels = channels
         self._n_bands = n_bands
+        self._monitor = monitor
         self._bg_image = bg_image
         self._bg_alpha = bg_alpha
 
@@ -133,16 +135,29 @@ class EqualizerOpenGLThread(threading.Thread):
     def run(self):
         if not glfw.init():
             raise Exception("GLFW initialization failed")
-
-        primary_monitor = glfw.get_primary_monitor()
         
-            # Get the primary monitor's video mode
-        video_mode = glfw.get_video_mode(primary_monitor)
+        # retrieve the monitor object by name
+        selected_monitor = None
+        if self._monitor:
+            monitors = glfw.get_monitors()
+            for monitor in monitors:
+                if self._monitor == str(glfw.get_monitor_name(monitor)):
+                    selected_monitor = monitor
+                    break
+        else:
+            selected_monitor = glfw.get_primary_monitor()
+
+        if not selected_monitor:
+            glfw.terminate()
+            raise Exception('Not actual monitor instance has been found')
+        
+        # Get the primary monitor's video mode
+        video_mode = glfw.get_video_mode(selected_monitor)
         self.window_width = video_mode.size.width
         self.window_height = video_mode.size.height
         self.frame_rate = video_mode.refresh_rate
 
-        window = glfw.create_window(self.window_width, self.window_height, "Audio Visualizer", primary_monitor, None)
+        window = glfw.create_window(self.window_width, self.window_height, "Audio Visualizer", selected_monitor, None)
         if not window:
             glfw.terminate()
             raise Exception("GLFW window creation failed")
@@ -202,7 +217,6 @@ class EqualizerOpenGLThread(threading.Thread):
         # Clean up resources before exiting
         glfw.destroy_window(window)
         glfw.terminate()
-        self.stop_event.set()
 
     def stop(self):
         # Stop the thread by breaking the main loop
