@@ -7,7 +7,7 @@
   },
   {
    "optionDest": "filenames",
-   "value": "G:/Python Projects/sound_wave/main.py"
+   "value": "G:/Python Projects/easy-graphic-equalizer/main.py"
   },
   {
    "optionDest": "onefile",
@@ -71,19 +71,19 @@
   },
   {
    "optionDest": "datas",
-   "value": "G:/Python Projects/sound_wave/.venv/Lib/site-packages/customtkinter;customtkinter/"
+   "value": "G:/Python Projects/easy-graphic-equalizer/.venv/Lib/site-packages/customtkinter;customtkinter/"
   },
   {
    "optionDest": "datas",
-   "value": "G:/Python Projects/sound_wave/.venv/Lib/site-packages/CTkMessagebox;CTkMessagebox/"
+   "value": "G:/Python Projects/easy-graphic-equalizer/.venv/Lib/site-packages/CTkMessagebox;CTkMessagebox/"
   },
   {
    "optionDest": "datas",
-   "value": "G:/Python Projects/sound_wave/glfw3.dll;."
+   "value": "G:/Python Projects/easy-graphic-equalizer/resources;resources/"
   },
   {
    "optionDest": "datas",
-   "value": "G:/Python Projects/sound_wave/resources;resources/"
+   "value": "G:/Python Projects/easy-graphic-equalizer/glfw3.dll;."
   }
  ],
  "nonPyinstallerOptions": {

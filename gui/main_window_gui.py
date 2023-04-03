@@ -328,7 +328,7 @@ class AudioCaptureGUI(ctk.CTk):
         """
         Start the equalizer thread when the start button is pressed
         """
-        if not self.canvas_thread and not self.equalizer_opengl_thread:
+        if not self.canvas_thread:
             if self.audio_thread:
                 # Start the OpenGL window in a new thread
                 self.canvas_thread = EqualizerTkinterThread(

@@ -47,6 +47,8 @@ class EqualizerOpenGLThread(threading.Thread):
         self.stop_event = threading.Event()
         self._background_texture = None
 
+        self.window_width = self.window_height = None
+
     def generate_frequency_bands(self, num_bands):
         min_log_freq = np.log10(MIN_FREQ)
         max_log_freq = np.log10(MAX_FREQ)
@@ -161,6 +163,8 @@ class EqualizerOpenGLThread(threading.Thread):
 
         # initialize audio buffer
         audio_buffer = None
+
+        self.window_width, self.window_height = glfw.get_framebuffer_size(window)
 
         frame_duration = 1 / FRAME_RATE
         previous_time = time.time()
