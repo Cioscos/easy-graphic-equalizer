@@ -251,7 +251,7 @@ class AudioCaptureGUI(ctk.CTk):
             raise Exception("GLFW initialization failed")
         
         monitors = glfw.get_monitors()
-        monitors_name = [str(glfw.get_monitor_name(monitor)) for monitor in monitors]
+        monitors_name = [glfw.get_monitor_name(monitor).decode('utf-8') for monitor in monitors]
 
         glfw.terminate()
 

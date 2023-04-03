@@ -141,7 +141,7 @@ class EqualizerOpenGLThread(threading.Thread):
         if self._monitor:
             monitors = glfw.get_monitors()
             for monitor in monitors:
-                if self._monitor == str(glfw.get_monitor_name(monitor)):
+                if self._monitor == glfw.get_monitor_name(monitor).decode('utf-8'):
                     selected_monitor = monitor
                     break
         else:
