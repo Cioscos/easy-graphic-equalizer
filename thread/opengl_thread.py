@@ -10,7 +10,7 @@ import scipy.fftpack as fft_pack
 from PIL import Image
 
 RATE = 44100
-N_FFT= 8192
+N_FFT= 32768
 MIN_FREQ = 20
 MAX_FREQ = 20000
 
@@ -67,6 +67,9 @@ class EqualizerOpenGLThread(threading.Thread):
         # Check that the number of channels in the input data matches the expected number of channels
         assert audio_samples.shape[0] == channels, f"Input data has {audio_samples.shape[0]} channels, expected {channels}"
 
+        # Calculate the volume of the input audio data
+        volume = np.sqrt(np.mean(audio_data ** 2))
+
         equalizer_data = []
 
         for channel_samples in audio_samples:
@@ -89,6 +92,8 @@ class EqualizerOpenGLThread(threading.Thread):
                 else:
                     band_amplitude = 0
 
+                # Scale the amplitude based on the actual volume
+                band_amplitude *= volume
                 band_amplitudes.append(band_amplitude)
 
             equalizer_data.append(band_amplitudes)
@@ -140,10 +145,9 @@ class EqualizerOpenGLThread(threading.Thread):
         selected_monitor = None
         if self._monitor:
             monitors = glfw.get_monitors()
-            for monitor in monitors:
-                if self._monitor == glfw.get_monitor_name(monitor).decode('utf-8'):
-                    selected_monitor = monitor
-                    break
+            monitor_idx = int(self._monitor.split(".")[0]) - 1  # Extract the index from the monitor name
+            if 0 <= monitor_idx < len(monitors):
+                selected_monitor = monitors[monitor_idx]
         else:
             selected_monitor = glfw.get_primary_monitor()
 

@@ -249,9 +249,9 @@ class AudioCaptureGUI(ctk.CTk):
     def get_available_monitors(self) -> list[str]:
         if not glfw.init():
             raise Exception("GLFW initialization failed")
-        
+
         monitors = glfw.get_monitors()
-        monitors_name = [glfw.get_monitor_name(monitor).decode('utf-8') for monitor in monitors]
+        monitors_name = [f"{idx + 1}. {glfw.get_monitor_name(monitor).decode('utf-8')}" for idx, monitor in enumerate(monitors)]
 
         glfw.terminate()
 
