@@ -23,7 +23,7 @@ class OptionMenuCustomFrame(tk.CTkFrame):
         if not values:
             values = ['--Select--']
 
-        self._optionmenu_var = tk.StringVar(value=initial_value if initial_value else values[0])
+        self._optionmenu_var = tk.StringVar(value=str(initial_value) if initial_value else str(values[0]))
         self._option_menu = tk.CTkOptionMenu(self,
                                             values=values,
                                             command=command,

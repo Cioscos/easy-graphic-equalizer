@@ -7,6 +7,7 @@ import tkinter as tk
 from CTkMessagebox import CTkMessagebox
 import soundcard as sc
 from PIL import Image, ImageTk
+import glfw
 
 from thread.audioCaptureThread import AudioCaptureThread
 from thread.equalizer_tkinter_thread import EqualizerTkinterThread
@@ -82,7 +83,7 @@ class AudioCaptureGUI(ctk.CTk):
         self.appearance_mode = OptionMenuCustomFrame(settings_frame,
                                                      header_name='Appearance Mode:',
                                                      values=["Light", "Dark", "System"],
-                                                     initial_value=ctk.get_appearance_mode(),
+                                                     initial_value="System",
                                                      command=self.change_appearance_mode_event)
         self.appearance_mode.pack(side=tk.TOP, padx=10, pady=10, fill=tk.X, expand=False)
 
@@ -93,6 +94,17 @@ class AudioCaptureGUI(ctk.CTk):
                                                      apply_command=self.apply_bg_comand)
         self.file_picker.pack(side=tk.TOP, padx=10, pady=10, fill=tk.X, expand=False)
         self.bg_filename = None
+
+        # fullscreen monitor option
+        self.selected_monitor = None
+        self.available_monitors = self.get_available_monitors()
+        if len(self.available_monitors) != 1:
+            self.monitor_option = OptionMenuCustomFrame(settings_frame,
+                                                        header_name='Fullscreen monitor',
+                                                        values=self.available_monitors,
+                                                        initial_value=self.available_monitors[0],
+                                                        command=self.change_selected_monitor)
+            self.monitor_option.pack(side=tk.TOP, padx=10, pady=10, fill=tk.X, expand=False)
 
         # alpha slider
         self.alpha_slider = SliderCustomFrame(settings_frame,
@@ -234,6 +246,17 @@ class AudioCaptureGUI(ctk.CTk):
             device = str(device).replace('<', '').replace('>', '')
             self.device_listbox.insert(tk.END, f"{device}")
 
+    def get_available_monitors(self) -> list[str]:
+        if not glfw.init():
+            raise Exception("GLFW initialization failed")
+
+        monitors = glfw.get_monitors()
+        monitors_name = [f"{idx + 1}. {glfw.get_monitor_name(monitor).decode('utf-8')}" for idx, monitor in enumerate(monitors)]
+
+        glfw.terminate()
+
+        return monitors_name
+
     def on_device_selected(self, _):
         """
         When a device from the listbox is choosen, it starts the audio_thread
@@ -324,6 +347,9 @@ class AudioCaptureGUI(ctk.CTk):
         else:
             self.device_listbox.configure(bg='#fff')
 
+    def change_selected_monitor(self, selected_monitor_name: str) -> None:
+        self.selected_monitor = selected_monitor_name
+
     def start_capture(self):
         """
         Start the equalizer thread when the start button is pressed
@@ -367,13 +393,20 @@ class AudioCaptureGUI(ctk.CTk):
         self.start_stop_button.configure(fg_color='green')
 
         if self.audio_thread:
-            self.equalizer_opengl_thread = EqualizerOpenGLThread(self.audio_queue,
-                                                                noise_threshold=self.noise_slider.get_value(),
-                                                                n_bands=int(self.frequency_slider.get_value()),
-                                                                control_queue=self.equalizer_control_queue,
-                                                                bg_image=self.bg_img)
-            
-            self.equalizer_opengl_thread.start()
+            if self.equalizer_opengl_thread:
+                self.equalizer_opengl_thread.stop()
+                while self.equalizer_opengl_thread.is_alive():
+                    self.equalizer_opengl_thread.join(timeout=0.1)
+                self.equalizer_opengl_thread = None
+            else:
+                self.equalizer_opengl_thread = EqualizerOpenGLThread(self.audio_queue,
+                                                                    noise_threshold=self.noise_slider.get_value(),
+                                                                    n_bands=int(self.frequency_slider.get_value()),
+                                                                    control_queue=self.equalizer_control_queue,
+                                                                    bg_image=self.bg_img,
+                                                                    monitor=self.selected_monitor)
+                
+                self.equalizer_opengl_thread.start()
         else:
             self.show_no_audio_thread_warning()
 
@@ -434,7 +467,7 @@ class AudioCaptureGUI(ctk.CTk):
         if self.equalizer_opengl_thread:
             self.equalizer_opengl_thread.stop()
             while self.equalizer_opengl_thread.is_alive():
-                self.audio_thread.join(timeout=0.1)
+                self.equalizer_opengl_thread.join(timeout=0.1)
                 self.update()
 
         self.destroy()
