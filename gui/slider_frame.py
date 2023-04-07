@@ -1,4 +1,6 @@
-from typing import Callable, Optional
+from typing import Callable, Optional, Union
+from enum import Enum
+
 import customtkinter as tk
 
 
@@ -6,16 +8,21 @@ class SliderCustomFrame(tk.CTkFrame):
     """
     Custom class to wrap an Slider inside a frame
     """
+    class ValueType(Enum):
+        INT = 'int'
+        DOUBLE = 'double'
+
     def __init__(self,
                  *args,
                  header_name: str = 'SliderCustomFrame',
-                 initial_value: float = 0.1,
+                 initial_value: Union[float, int] = 0.1,
                  from_: int = 0,
                  to: int = 1,
                  steps: Optional[int] = None,
                  command: Optional[Callable] = None,
                  warning_text: Optional[str] = None,
                  warning_trigger_value: Optional[int] = None,
+                 value_type: ValueType = ValueType.DOUBLE,
                  **kwargs):
         super().__init__(*args, **kwargs)
 
@@ -24,7 +31,14 @@ class SliderCustomFrame(tk.CTkFrame):
         
         self._warning_trigger_value = warning_trigger_value
 
-        self.slider_value = tk.DoubleVar(value=initial_value)
+        if value_type == self.ValueType.INT:
+            self.slider_value = tk.IntVar()
+        elif value_type == self.ValueType.DOUBLE:
+            self.slider_value = tk.DoubleVar()
+        else:
+            raise Exception(f'No valid value passed to value_type. Use one of these values: {[type.value for type in self.ValueType]}')
+        
+        self.slider_value.set(value=initial_value)
 
         slider_frame = tk.CTkFrame(self)
         slider_frame.pack(expand=True, fill=tk.X, pady=2)

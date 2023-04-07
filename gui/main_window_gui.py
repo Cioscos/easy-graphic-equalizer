@@ -128,7 +128,8 @@ class AudioCaptureGUI(ctk.CTk):
                                               steps=32,
                                               initial_value=INITIAL_FREQUENCIES_BANDS,
                                               warning_trigger_value=15,
-                                              warning_text='The number of the bard could be too high.\nConsider to use the fullscreen view')
+                                              warning_text='The number of the bard could be too high.\nConsider to use the fullscreen view',
+                                              value_type=SliderCustomFrame.ValueType.INT)
         self.frequency_slider.pack(side=tk.TOP, padx=10, pady=5, fill=tk.X, expand=False)
 
         # Create right frame
