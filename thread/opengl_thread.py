@@ -1,7 +1,7 @@
 import threading
 import math
 import time
-from typing import Optional
+from typing import Optional, Callable
 
 import glfw
 from OpenGL.GL import *
@@ -24,7 +24,8 @@ class EqualizerOpenGLThread(threading.Thread):
                  control_queue=None,
                  monitor= None,
                  bg_image: Optional[Image.Image]= None,
-                 bg_alpha: Optional[float]=None):
+                 bg_alpha: Optional[float]=None,
+                 window_close_callback: Callable= None):
         super().__init__()
         self._audio_queue = audio_queue
         self._control_queue = control_queue
@@ -34,6 +35,7 @@ class EqualizerOpenGLThread(threading.Thread):
         self._monitor = monitor
         self._bg_image = bg_image
         self._bg_alpha = bg_alpha
+        self.window_close_callback = window_close_callback
 
         # List of temporary amplitudes to create an animation effect
         self.frequency_bands = self.generate_frequency_bands(self._n_bands)
@@ -230,6 +232,7 @@ class EqualizerOpenGLThread(threading.Thread):
         if key == glfw.KEY_ESCAPE and action == glfw.PRESS:
             glfw.set_window_should_close(window, True)
             self.stop()
+            self.window_close_callback()
 
     def update_texture_alpha(self):
         self._bg_image.putalpha(int(255 * self._bg_alpha))

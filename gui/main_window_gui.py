@@ -404,11 +404,14 @@ class AudioCaptureGUI(ctk.CTk):
                                                                     n_bands=int(self.frequency_slider.get_value()),
                                                                     control_queue=self.equalizer_control_queue,
                                                                     bg_image=self.bg_img,
-                                                                    monitor=self.selected_monitor)
-                
+                                                                    monitor=self.selected_monitor,
+                                                                    window_close_callback=self.opengl_window_closed)
                 self.equalizer_opengl_thread.start()
         else:
             self.show_no_audio_thread_warning()
+
+    def opengl_window_closed(self):
+        self.equalizer_opengl_thread = None
 
     def open_help_window(self):
         if self.help_window is None or not self.help_window.winfo_exists():
