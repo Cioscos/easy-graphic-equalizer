@@ -1,18 +1,37 @@
 import threading
 import math
 import time
+from concurrent.futures import ThreadPoolExecutor
 from typing import Optional, Callable
 
 import glfw
 from OpenGL.GL import *
 import numpy as np
-import scipy.fftpack as fft_pack
+import pyfftw
 from PIL import Image
 
 RATE = 44100
 N_FFT= 32768
 MIN_FREQ = 20
 MAX_FREQ = 20000
+
+
+def process_frequency_bands(args):
+    fft_values, freqs, bands, volume = args
+    band_amplitudes = []
+
+    for low_freq, high_freq in bands:
+        band_filter = np.logical_and(freqs >= low_freq, freqs <= high_freq)
+
+        if np.any(band_filter):
+            band_amplitude = np.mean(fft_values[band_filter]) * np.sum(band_filter)
+        else:
+            band_amplitude = 0
+
+        band_amplitude *= volume
+        band_amplitudes.append(band_amplitude)
+
+    return band_amplitudes
 
 
 class EqualizerOpenGLThread(threading.Thread):
@@ -53,6 +72,8 @@ class EqualizerOpenGLThread(threading.Thread):
         self.window_width = self.window_height = None
         self.frame_rate = None
 
+        self.executor = ThreadPoolExecutor(max_workers=4)
+
     def generate_frequency_bands(self, num_bands):
         min_log_freq = np.log10(MIN_FREQ)
         max_log_freq = np.log10(MAX_FREQ)
@@ -72,7 +93,18 @@ class EqualizerOpenGLThread(threading.Thread):
         # Calculate the volume of the input audio data
         volume = np.sqrt(np.mean(audio_data ** 2))
 
+        num_workers = 4
+        bands_per_worker = len(frequency_bands) // num_workers
+
+        # Split frequency bands into smaller chunks for each worker
+        frequency_band_chunks = [frequency_bands[i:i + bands_per_worker] for i in range(0, len(frequency_bands), bands_per_worker)]
+
         equalizer_data = []
+
+        # Prepare FFTW plan
+        padded_samples = np.zeros(N_FFT, dtype=np.complex128)
+        fft_values = pyfftw.empty_aligned(N_FFT, dtype=np.complex128)
+        fft_object = pyfftw.FFTW(padded_samples, fft_values)
 
         for channel_samples in audio_samples:
             # Apply a window function to reduce leakage effect
@@ -80,23 +112,22 @@ class EqualizerOpenGLThread(threading.Thread):
             windowed_samples = channel_samples * window
 
             # Zero-padding
-            padded_samples = np.pad(windowed_samples, (0, N_FFT - len(windowed_samples)), 'constant')
+            padded_samples[:len(windowed_samples)] = windowed_samples
+            padded_samples[len(windowed_samples):] = 0
 
-            fft_values = np.abs(fft_pack.fft(padded_samples))
-            freqs = fft_pack.fftfreq(len(fft_values), 1.0 / RATE)
+            # Calculate FFT using PyFFTW
+            fft_object.update_arrays(padded_samples, fft_values)
+            fft_object.execute()
 
-            band_amplitudes = []
-            for low_freq, high_freq in frequency_bands:
-                band_filter = np.logical_and(freqs >= low_freq, freqs <= high_freq)
+            # Convert FFT values to magnitudes
+            fft_magnitudes = np.abs(fft_values)
+            freqs = np.fft.fftfreq(len(fft_magnitudes), 1.0 / RATE)
 
-                if np.any(band_filter):
-                    band_amplitude = np.mean(fft_values[band_filter]) * np.sum(band_filter)
-                else:
-                    band_amplitude = 0
+            # Process frequency bands in parallel
+            band_amplitude_chunks = list(self.executor.map(process_frequency_bands, [(fft_magnitudes, freqs, chunk, volume) for chunk in frequency_band_chunks]))
 
-                # Scale the amplitude based on the actual volume
-                band_amplitude *= volume
-                band_amplitudes.append(band_amplitude)
+            # Flatten the list of band_amplitude_chunks
+            band_amplitudes = [amplitude for chunk in band_amplitude_chunks for amplitude in chunk]
 
             equalizer_data.append(band_amplitudes)
 
@@ -104,8 +135,7 @@ class EqualizerOpenGLThread(threading.Thread):
         filtered_amplitudes = [amp if amp >= noise_threshold else 0 for amp in avg_band_amplitudes]
         max_amplitude = max(filtered_amplitudes)
         epsilon = 1e-12  # Add a small value to prevent division by very small numbers
-        normalized_amplitudes = [(amplitude / (max_amplitude + epsilon)) if max_amplitude > 0 else 0
-                                for amplitude in filtered_amplitudes]
+        normalized_amplitudes = [(amplitude / (max_amplitude + epsilon)) if max_amplitude > 0 else 0 for amplitude in filtered_amplitudes]
 
         return normalized_amplitudes
     
@@ -227,6 +257,9 @@ class EqualizerOpenGLThread(threading.Thread):
     def stop(self):
         # Stop the thread by breaking the main loop
         self.stop_event.set()
+
+    def __del__(self):
+        self.executor.shutdown(wait=True)
 
     def key_callback(self, window, key, scancode, action, mods):
         if key == glfw.KEY_ESCAPE and action == glfw.PRESS:
