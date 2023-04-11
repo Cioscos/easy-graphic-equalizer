@@ -1,18 +1,65 @@
 import threading
 import math
 import time
+from multiprocessing import Pool
 from typing import Optional, Callable
 
 import glfw
 from OpenGL.GL import *
 import numpy as np
-import scipy.fftpack as fft_pack
 from PIL import Image
 
 RATE = 44100
 N_FFT= 32768
 MIN_FREQ = 20
 MAX_FREQ = 20000
+
+
+def compute_fft(channel_samples, padded_samples):
+    # Apply a window function to reduce leakage effect
+    window = np.blackman(len(channel_samples))
+    windowed_samples = channel_samples * window
+
+    # Zero-padding
+    padded_samples[:len(windowed_samples)] = windowed_samples
+    padded_samples[len(windowed_samples):] = 0
+
+    # Calculate FFT using NumPy
+    fft_values = np.fft.fft(padded_samples)
+
+    # Convert FFT values to magnitudes
+    fft_magnitudes = np.abs(fft_values)
+
+    return fft_magnitudes
+
+def compute_channel_fft(args):
+    audio_samples, padded_samples, volume, frequency_band_chunks = args
+
+    # Compute FFT for all channels
+    fft_magnitudes = [compute_fft(channel_samples, padded_samples.copy()) for channel_samples in audio_samples]
+    freqs = np.fft.fftfreq(len(fft_magnitudes[0]), 1.0 / RATE)
+
+    # Process frequency bands for all channels
+    band_amplitude_chunks = [process_frequency_bands((fft_values, freqs, frequency_band_chunks, volume)) for fft_values in fft_magnitudes]
+
+    return band_amplitude_chunks
+
+def process_frequency_bands(args):
+    fft_values, freqs, bands, volume = args
+    band_amplitudes = []
+
+    for low_freq, high_freq in bands:
+        band_filter = np.logical_and(freqs >= low_freq, freqs <= high_freq)
+
+        if np.any(band_filter):
+            band_amplitude = np.mean(fft_values[band_filter]) * np.sum(band_filter)
+        else:
+            band_amplitude = 0
+
+        band_amplitude *= volume
+        band_amplitudes.append(band_amplitude)
+
+    return band_amplitudes
 
 
 class EqualizerOpenGLThread(threading.Thread):
@@ -22,6 +69,7 @@ class EqualizerOpenGLThread(threading.Thread):
                  channels=2,
                  n_bands=9,
                  control_queue=None,
+                 workers: int = 5,
                  monitor= None,
                  bg_image: Optional[Image.Image]= None,
                  bg_alpha: Optional[float]=None,
@@ -36,6 +84,7 @@ class EqualizerOpenGLThread(threading.Thread):
         self._bg_image = bg_image
         self._bg_alpha = bg_alpha
         self.window_close_callback = window_close_callback
+        self._workers = workers
 
         # List of temporary amplitudes to create an animation effect
         self.frequency_bands = self.generate_frequency_bands(self._n_bands)
@@ -52,6 +101,8 @@ class EqualizerOpenGLThread(threading.Thread):
 
         self.window_width = self.window_height = None
         self.frame_rate = None
+
+        self.executor = Pool(processes=workers)
 
     def generate_frequency_bands(self, num_bands):
         min_log_freq = np.log10(MIN_FREQ)
@@ -72,42 +123,31 @@ class EqualizerOpenGLThread(threading.Thread):
         # Calculate the volume of the input audio data
         volume = np.sqrt(np.mean(audio_data ** 2))
 
-        equalizer_data = []
+        bands_per_worker = len(frequency_bands) // self._workers
 
-        for channel_samples in audio_samples:
-            # Apply a window function to reduce leakage effect
-            window = np.blackman(len(channel_samples))
-            windowed_samples = channel_samples * window
+        # Split frequency bands into smaller chunks for each worker
+        frequency_band_chunks = [frequency_bands[i:i + bands_per_worker] for i in range(0, len(frequency_bands), bands_per_worker)]
 
-            # Zero-padding
-            padded_samples = np.pad(windowed_samples, (0, N_FFT - len(windowed_samples)), 'constant')
+        padded_samples = np.zeros(N_FFT)
 
-            fft_values = np.abs(fft_pack.fft(padded_samples))
-            freqs = fft_pack.fftfreq(len(fft_values), 1.0 / RATE)
+        # Compute channel FFT and process frequency bands in parallel
+        band_amplitude_chunks = self.executor.map(compute_channel_fft, [(audio_samples, padded_samples, volume, chunk) for chunk in frequency_band_chunks])
 
-            band_amplitudes = []
-            for low_freq, high_freq in frequency_bands:
-                band_filter = np.logical_and(freqs >= low_freq, freqs <= high_freq)
+        equalizer_data = [[] for _ in range(channels)]
 
-                if np.any(band_filter):
-                    band_amplitude = np.mean(fft_values[band_filter]) * np.sum(band_filter)
-                else:
-                    band_amplitude = 0
-
-                # Scale the amplitude based on the actual volume
-                band_amplitude *= volume
-                band_amplitudes.append(band_amplitude)
-
-            equalizer_data.append(band_amplitudes)
+        # Flatten the list of band_amplitude_chunks and group by channel
+        for chunk in band_amplitude_chunks:
+            for channel_index, channel_data in enumerate(chunk):
+                equalizer_data[channel_index].extend(channel_data)
 
         avg_band_amplitudes = np.mean(equalizer_data, axis=0)
         filtered_amplitudes = [amp if amp >= noise_threshold else 0 for amp in avg_band_amplitudes]
         max_amplitude = max(filtered_amplitudes)
         epsilon = 1e-12  # Add a small value to prevent division by very small numbers
-        normalized_amplitudes = [(amplitude / (max_amplitude + epsilon)) if max_amplitude > 0 else 0
-                                for amplitude in filtered_amplitudes]
+        normalized_amplitudes = [(amplitude / (max_amplitude + epsilon)) if max_amplitude > 0 else 0 for amplitude in filtered_amplitudes]
 
         return normalized_amplitudes
+
     
     def init_vbos(self):
         self.vbos = []
@@ -227,6 +267,8 @@ class EqualizerOpenGLThread(threading.Thread):
     def stop(self):
         # Stop the thread by breaking the main loop
         self.stop_event.set()
+        self.executor.close()
+        self.executor.join()
 
     def key_callback(self, window, key, scancode, action, mods):
         if key == glfw.KEY_ESCAPE and action == glfw.PRESS:
