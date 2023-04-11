@@ -1,7 +1,7 @@
 import threading
 import math
 import time
-from multiprocessing import Pool
+from concurrent.futures import ProcessPoolExecutor
 from typing import Optional, Callable
 
 import glfw
@@ -102,7 +102,7 @@ class EqualizerOpenGLThread(threading.Thread):
         self.window_width = self.window_height = None
         self.frame_rate = None
 
-        self.executor = Pool(processes=workers)
+        self.executor = ProcessPoolExecutor(max_workers=4)
 
     def generate_frequency_bands(self, num_bands):
         min_log_freq = np.log10(MIN_FREQ)
@@ -123,7 +123,7 @@ class EqualizerOpenGLThread(threading.Thread):
         # Calculate the volume of the input audio data
         volume = np.sqrt(np.mean(audio_data ** 2))
 
-        bands_per_worker = len(frequency_bands) // self._workers
+        bands_per_worker = len(frequency_bands) // self.executor._max_workers
 
         # Split frequency bands into smaller chunks for each worker
         frequency_band_chunks = [frequency_bands[i:i + bands_per_worker] for i in range(0, len(frequency_bands), bands_per_worker)]
@@ -131,7 +131,7 @@ class EqualizerOpenGLThread(threading.Thread):
         padded_samples = np.zeros(N_FFT)
 
         # Compute channel FFT and process frequency bands in parallel
-        band_amplitude_chunks = self.executor.map(compute_channel_fft, [(audio_samples, padded_samples, volume, chunk) for chunk in frequency_band_chunks])
+        band_amplitude_chunks = list(self.executor.map(compute_channel_fft, [(audio_samples, padded_samples, volume, chunk) for chunk in frequency_band_chunks]))
 
         equalizer_data = [[] for _ in range(channels)]
 
@@ -147,7 +147,6 @@ class EqualizerOpenGLThread(threading.Thread):
         normalized_amplitudes = [(amplitude / (max_amplitude + epsilon)) if max_amplitude > 0 else 0 for amplitude in filtered_amplitudes]
 
         return normalized_amplitudes
-
     
     def init_vbos(self):
         self.vbos = []
@@ -267,8 +266,7 @@ class EqualizerOpenGLThread(threading.Thread):
     def stop(self):
         # Stop the thread by breaking the main loop
         self.stop_event.set()
-        self.executor.close()
-        self.executor.join()
+        self.executor.shutdown(wait=True)
 
     def key_callback(self, window, key, scancode, action, mods):
         if key == glfw.KEY_ESCAPE and action == glfw.PRESS:
