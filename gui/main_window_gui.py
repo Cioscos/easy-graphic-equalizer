@@ -16,6 +16,7 @@ from gui.slider_frame import SliderCustomFrame
 from gui.optionmenu_frame import OptionMenuCustomFrame
 from gui.background_filepicker_frame import BackgroundFilepickerFrame
 from gui.help_window import HelpWindow
+from gui.processes_number_frame import ProcessesNumberFrame
 from resource_manager import ResourceManager
 
 MAX_QUEUE_SIZE = 200
@@ -131,6 +132,16 @@ class AudioCaptureGUI(ctk.CTk):
                                               warning_text='The number of the bard could be too high.\nConsider to use the fullscreen view',
                                               value_type=SliderCustomFrame.ValueType.INT)
         self.frequency_slider.pack(side=tk.TOP, padx=10, pady=5, fill=tk.X, expand=False)
+
+        # Processors number
+        self.processors_number_frame = ProcessesNumberFrame(
+            settings_frame,
+            max_value=5,
+            initial_value=1,
+            command=self.update_workers_number,
+            auto_callback=self.update_auto_workers
+        )
+        self.processors_number_frame.pack(side=tk.TOP, padx=10, pady=5, fill=tk.X, expand=False)
 
         # Create right frame
         right_frame = ctk.CTkFrame(self, border_width=2)
@@ -327,6 +338,22 @@ class AudioCaptureGUI(ctk.CTk):
             }
             self.equalizer_control_queue.put(message)
 
+    def update_workers_number(self, value):
+        if self.equalizer_opengl_thread:
+            message = {
+                "type": "set_workers",
+                "value": value
+            }
+            self.equalizer_control_queue.put(message)
+
+    def update_auto_workers(self, value):
+        if self.equalizer_opengl_thread:
+            message = {
+                "type": "set_auto_workers",
+                "value": value
+            }
+            self.equalizer_control_queue.put(message)
+
     def update_alpha(self, value):
         self.bg_alpha = value
         self.bg_img_used.putalpha(int(255 * self.bg_alpha))
@@ -406,7 +433,10 @@ class AudioCaptureGUI(ctk.CTk):
                                                                     control_queue=self.equalizer_control_queue,
                                                                     bg_image=self.bg_img,
                                                                     monitor=self.selected_monitor,
-                                                                    window_close_callback=self.opengl_window_closed)
+                                                                    window_close_callback=self.opengl_window_closed,
+                                                                    workers=self.processors_number_frame.get_value(),
+                                                                    auto_workers=self.processors_number_frame.is_auto())
+
                 self.equalizer_opengl_thread.start()
         else:
             self.show_no_audio_thread_warning()
@@ -439,7 +469,7 @@ class AudioCaptureGUI(ctk.CTk):
         self.bg_img_used.putalpha(int(255 * self.bg_alpha))
         self.canvas_image = ImageTk.PhotoImage(self.bg_img_used)
         self.equalizer_canvas.create_image(0, 0, anchor=ctk.NW, image=self.canvas_image, tags='background')
-        self.equalizer_canvas.tag_lower('background') 
+        self.equalizer_canvas.tag_lower('background')
         self.resize_scheduled = False
 
     def run(self):
