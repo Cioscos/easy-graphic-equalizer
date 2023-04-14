@@ -436,6 +436,7 @@ class AudioCaptureGUI(ctk.CTk):
                                                                     window_close_callback=self.opengl_window_closed,
                                                                     workers=self.processors_number_frame.get_value(),
                                                                     auto_workers=self.processors_number_frame.is_auto())
+
                 self.equalizer_opengl_thread.start()
         else:
             self.show_no_audio_thread_warning()
