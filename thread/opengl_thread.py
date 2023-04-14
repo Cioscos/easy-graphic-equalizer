@@ -7,6 +7,7 @@ from typing import Optional, Callable
 import glfw
 from OpenGL.GL import *
 import numpy as np
+import scipy.fftpack as fft_pack
 from PIL import Image
 
 RATE = 44100
@@ -37,7 +38,7 @@ def compute_channel_fft(args):
 
     # Compute FFT for all channels
     fft_magnitudes = [compute_fft(channel_samples, padded_samples.copy()) for channel_samples in audio_samples]
-    freqs = np.fft.fftfreq(len(fft_magnitudes[0]), 1.0 / RATE)
+    freqs = fft_pack.fftfreq(len(fft_magnitudes[0]), 1.0 / RATE)
 
     # Process frequency bands for all channels
     band_amplitude_chunks = [process_frequency_bands((fft_values, freqs, frequency_band_chunks, volume)) for fft_values in fft_magnitudes]
@@ -70,6 +71,7 @@ class EqualizerOpenGLThread(threading.Thread):
                  n_bands=9,
                  control_queue=None,
                  workers: int = 5,
+                 auto_workers: bool = False,
                  monitor= None,
                  bg_image: Optional[Image.Image]= None,
                  bg_alpha: Optional[float]=None,
@@ -84,8 +86,7 @@ class EqualizerOpenGLThread(threading.Thread):
         self._bg_image = bg_image
         self._bg_alpha = bg_alpha
         self.window_close_callback = window_close_callback
-        self._workers = workers
-
+        self._auto_workers = auto_workers
         # List of temporary amplitudes to create an animation effect
         self.frequency_bands = self.generate_frequency_bands(self._n_bands)
 
@@ -102,7 +103,30 @@ class EqualizerOpenGLThread(threading.Thread):
         self.window_width = self.window_height = None
         self.frame_rate = None
 
-        self.executor = ProcessPoolExecutor(max_workers=4)
+        self._workers = self._calculate_workers(n_bands) if auto_workers else workers
+
+        self.executor = ProcessPoolExecutor(max_workers=self._workers)
+
+    def _calculate_workers(self, bands:int) -> int:
+        """
+        Calculate the number fo the workers based on the bands number
+
+        Args:
+            bands (int): Number of bands
+
+        Returns:
+            int: The number of workers
+        """
+        if bands <= 10:
+            return 1
+        elif bands <= 30:
+            return 2
+        elif bands <= 50:
+            return 3
+        elif bands <= 70:
+            return 4
+        else:
+            return 5
 
     def generate_frequency_bands(self, num_bands):
         min_log_freq = np.log10(MIN_FREQ)
@@ -123,22 +147,51 @@ class EqualizerOpenGLThread(threading.Thread):
         # Calculate the volume of the input audio data
         volume = np.sqrt(np.mean(audio_data ** 2))
 
-        bands_per_worker = len(frequency_bands) // self.executor._max_workers
+        if self._workers == 1:
+            equalizer_data = []
 
-        # Split frequency bands into smaller chunks for each worker
-        frequency_band_chunks = [frequency_bands[i:i + bands_per_worker] for i in range(0, len(frequency_bands), bands_per_worker)]
+            for channel_samples in audio_samples:
+                # Apply a window function to reduce leakage effect
+                window = np.blackman(len(channel_samples))
+                windowed_samples = channel_samples * window
 
-        padded_samples = np.zeros(N_FFT)
+                # Zero-padding
+                padded_samples = np.pad(windowed_samples, (0, N_FFT - len(windowed_samples)), 'constant')
 
-        # Compute channel FFT and process frequency bands in parallel
-        band_amplitude_chunks = list(self.executor.map(compute_channel_fft, [(audio_samples, padded_samples, volume, chunk) for chunk in frequency_band_chunks]))
+                fft_values = np.abs(fft_pack.fft(padded_samples))
+                freqs = fft_pack.fftfreq(len(fft_values), 1.0 / RATE)
 
-        equalizer_data = [[] for _ in range(channels)]
+                band_amplitudes = []
+                for low_freq, high_freq in frequency_bands:
+                    band_filter = np.logical_and(freqs >= low_freq, freqs <= high_freq)
 
-        # Flatten the list of band_amplitude_chunks and group by channel
-        for chunk in band_amplitude_chunks:
-            for channel_index, channel_data in enumerate(chunk):
-                equalizer_data[channel_index].extend(channel_data)
+                    if np.any(band_filter):
+                        band_amplitude = np.mean(fft_values[band_filter]) * np.sum(band_filter)
+                    else:
+                        band_amplitude = 0
+
+                    # Scale the amplitude based on the actual volume
+                    band_amplitude *= volume
+                    band_amplitudes.append(band_amplitude)
+
+                equalizer_data.append(band_amplitudes)
+        else:
+            bands_per_worker = len(frequency_bands) // self._workers
+
+            # Split frequency bands into smaller chunks for each worker
+            frequency_band_chunks = [frequency_bands[i:i + bands_per_worker] for i in range(0, len(frequency_bands), bands_per_worker)]
+
+            padded_samples = np.zeros(N_FFT)
+
+            # Compute channel FFT and process frequency bands in parallel
+            band_amplitude_chunks = list(self.executor.map(compute_channel_fft, [(audio_samples, padded_samples, volume, chunk) for chunk in frequency_band_chunks]))
+
+            equalizer_data = [[] for _ in range(channels)]
+
+            # Flatten the list of band_amplitude_chunks and group by channel
+            for chunk in band_amplitude_chunks:
+                for channel_index, channel_data in enumerate(chunk):
+                    equalizer_data[channel_index].extend(channel_data)
 
         avg_band_amplitudes = np.mean(equalizer_data, axis=0)
         filtered_amplitudes = [amp if amp >= noise_threshold else 0 for amp in avg_band_amplitudes]
@@ -160,23 +213,49 @@ class EqualizerOpenGLThread(threading.Thread):
         message_type = message["type"]
 
         if message_type == "set_noise_threshold":
-
             self._noise_threshold = message["value"]
-        elif message_type == 'set_frequency_bands':
 
+        elif message_type == 'set_frequency_bands':
+            self._n_bands = message["value"]
             self.frequency_bands = self.generate_frequency_bands(message["value"])
             self.previous_amplitudes = [0] * len(self.frequency_bands)
             # Clear and reinitialize VBOs
             glDeleteBuffers(len(self.vbos), self.vbos)
             self.init_vbos()
-        elif message_type == 'set_alpha':
 
+            if self._auto_workers:
+                new_workers_number = self._calculate_workers(message["value"])
+                if new_workers_number != self._workers:
+                    self._workers = new_workers_number
+                    if self._workers > 1:
+                        self.executor.shutdown(wait=True)
+                        self.executor = None
+                        self.executor = ProcessPoolExecutor(max_workers=self._workers)
+
+        elif message_type == 'set_alpha':
             self._bg_alpha = message['value']
             self.update_texture_alpha()
-        elif message_type == 'set_image':
 
+        elif message_type == 'set_image':
             self._bg_image = message['value']
             self._background_texture = self.load_texture()
+
+        elif message_type == 'set_workers':
+            self._workers = message["value"]
+            self.executor.shutdown(wait=True)
+            self.executor = None
+            self.executor = ProcessPoolExecutor(max_workers=message["value"])
+
+        elif message_type == 'set_auto_workers':
+            if self._auto_workers:
+                self._auto_workers = False
+            else:
+                self._auto_workers = True
+                self._workers = self._calculate_workers(self._n_bands)
+                if self._workers > 1:
+                    self.executor.shutdown(wait=True)
+                    self.executor = None
+                    self.executor = ProcessPoolExecutor(max_workers=self._workers)
 
     def run(self):
         if not glfw.init():
