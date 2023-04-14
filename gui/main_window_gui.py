@@ -76,7 +76,7 @@ class AudioCaptureGUI(ctk.CTk):
         self.device_listbox.bind(SINGLE_LEFT_MOUSE_BOTTON_CLICK, self.on_device_selected)
 
         # Create settings frame
-        settings_frame = ctk.CTkFrame(left_frame, border_width=2)
+        settings_frame = ctk.CTkScrollableFrame(left_frame, border_width=2)
         settings_frame.pack(side=tk.BOTTOM, fill=tk.BOTH, expand=True)
         ctk.CTkLabel(settings_frame, text="Settings", font=("Roboto", 18, "bold")).pack(side=tk.TOP, padx=5, pady=5)
         
