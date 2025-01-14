@@ -1,4 +1,12 @@
+# Python virtual environment
 .venv
+
+# IDE Folders
 .vscode
+.idea
+
+# Python caches folders
 __pycache__
+
+# Standard output folder for auto-py-to-exe
 output/
