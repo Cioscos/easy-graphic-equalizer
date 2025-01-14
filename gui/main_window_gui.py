@@ -465,7 +465,7 @@ class AudioCaptureGUI(ctk.CTk):
     def resize_background(self, canvas: tk.Canvas):
         self.canvas_width, self.canvas_height = canvas.winfo_width(), canvas.winfo_height()
         # Resize the image using the resize() method starting from the original image
-        self.bg_img_used = self.bg_img.resize((self.canvas_width, self.canvas_height), Image.ANTIALIAS).copy()
+        self.bg_img_used = self.bg_img.resize((self.canvas_width, self.canvas_height), reducing_gap=2.0).copy()
         self.bg_img_used.putalpha(int(255 * self.bg_alpha))
         self.canvas_image = ImageTk.PhotoImage(self.bg_img_used)
         self.equalizer_canvas.create_image(0, 0, anchor=ctk.NW, image=self.canvas_image, tags='background')
