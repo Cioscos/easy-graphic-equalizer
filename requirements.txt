@@ -6,5 +6,5 @@ customtkinter
 CTkMessagebox
 Pillow
 PyOpenGL
-PyOpenGL_accelerate
+PyOpenGL-accelerate==3.1.9a2
 glfw
