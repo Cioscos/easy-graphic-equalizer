@@ -7,7 +7,7 @@
   },
   {
    "optionDest": "filenames",
-   "value": "G:/Python Projects/easy-graphic-equalizer/main.py"
+   "value": "C:/Users/Claudio/PycharmProjects/easy-graphic-equalizer/main.py"
   },
   {
    "optionDest": "onefile",
@@ -20,10 +20,6 @@
   {
    "optionDest": "name",
    "value": "sound wave"
-  },
-  {
-   "optionDest": "ascii",
-   "value": false
   },
   {
    "optionDest": "clean_build",
@@ -42,10 +38,6 @@
    "value": false
   },
   {
-   "optionDest": "embed_manifest",
-   "value": true
-  },
-  {
    "optionDest": "uac_admin",
    "value": false
   },
@@ -54,11 +46,7 @@
    "value": false
   },
   {
-   "optionDest": "win_private_assemblies",
-   "value": false
-  },
-  {
-   "optionDest": "win_no_prefer_redirects",
+   "optionDest": "argv_emulation",
    "value": false
   },
   {
@@ -66,24 +54,20 @@
    "value": false
   },
   {
-   "optionDest": "argv_emulation",
-   "value": false
+   "optionDest": "datas",
+   "value": "C:/Users/Claudio/PycharmProjects/easy-graphic-equalizer/.venv/Lib/site-packages/customtkinter;customtkinter/"
   },
   {
    "optionDest": "datas",
-   "value": "G:/Python Projects/easy-graphic-equalizer/.venv/Lib/site-packages/customtkinter;customtkinter/"
+   "value": "C:/Users/Claudio/PycharmProjects/easy-graphic-equalizer/.venv/Lib/site-packages/CTkMessagebox;CTkMessagebox/"
   },
   {
    "optionDest": "datas",
-   "value": "G:/Python Projects/easy-graphic-equalizer/.venv/Lib/site-packages/CTkMessagebox;CTkMessagebox/"
+   "value": "C:/Users/Claudio/PycharmProjects/easy-graphic-equalizer/resources;resources/"
   },
   {
    "optionDest": "datas",
-   "value": "G:/Python Projects/easy-graphic-equalizer/resources;resources/"
-  },
-  {
-   "optionDest": "datas",
-   "value": "G:/Python Projects/easy-graphic-equalizer/glfw3.dll;."
+   "value": "C:/Users/Claudio/PycharmProjects/easy-graphic-equalizer/glfw3.dll;."
   }
  ],
  "nonPyinstallerOptions": {
