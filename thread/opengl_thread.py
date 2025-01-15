@@ -19,48 +19,103 @@ MIN_FREQ = 20
 MAX_FREQ = 20000
 
 
-def compute_fft(channel_samples, padded_samples):
-    # Apply a window function to reduce leakage effect
-    window = np.blackman(len(channel_samples))
+def compute_fft(channel_samples: np.ndarray) -> np.ndarray:
+    """
+    Compute the FFT magnitudes for one channel of audio.
+
+    1) Applies a Hanning window to reduce spectral leakage.
+    2) Zero-pads only if len(channel_samples) < N_FFT.
+    3) Returns the absolute value of the FFT (magnitudes).
+
+    Args:
+        channel_samples (np.ndarray): The 1D array of audio samples for a single channel.
+
+    Returns:
+        np.ndarray: The magnitude of the FFT for these samples.
+    """
+    # Apply a Hanning window
+    window = np.hanning(len(channel_samples))
     windowed_samples = channel_samples * window
 
-    # Zero-padding
-    padded_samples[:len(windowed_samples)] = windowed_samples
-    padded_samples[len(windowed_samples):] = 0
+    # If needed, zero-pad up to N_FFT
+    if len(channel_samples) < N_FFT:
+        padded = np.zeros(N_FFT, dtype=windowed_samples.dtype)
+        padded[:len(windowed_samples)] = windowed_samples
+        fft_values = np.fft.fft(padded)
+    else:
+        # Otherwise, no need to pad
+        fft_values = np.fft.fft(windowed_samples)
 
-    # Calculate FFT using NumPy
-    fft_values = np.fft.fft(padded_samples)
-
-    # Convert FFT values to magnitudes
-    fft_magnitudes = np.abs(fft_values)
-
-    return fft_magnitudes
-
-def compute_channel_fft(args):
-    audio_samples, padded_samples, volume, frequency_band_chunks = args
-
-    # Compute FFT for all channels
-    fft_magnitudes = [compute_fft(channel_samples, padded_samples.copy()) for channel_samples in audio_samples]
-    freqs = fft_pack.fftfreq(len(fft_magnitudes[0]), 1.0 / RATE)
-
-    # Process frequency bands for all channels
-    band_amplitude_chunks = [process_frequency_bands((fft_values, freqs, frequency_band_chunks, volume)) for fft_values in fft_magnitudes]
-
-    return band_amplitude_chunks
+    # Return magnitude
+    return np.abs(fft_values)
 
 def process_frequency_bands(args):
+    """
+    process_frequency_bands handles the per-band amplitude calculation
+    using np.mean for each band filter, then applies 'volume' scaling.
+    """
     fft_values, freqs, bands, volume = args
     band_amplitudes = []
 
     for low_freq, high_freq in bands:
-        band_filter = np.logical_and(freqs >= low_freq, freqs <= high_freq)
+        band_mask = np.logical_and(freqs >= low_freq, freqs <= high_freq)
+        if np.any(band_mask):
+            # Use mean for a smoother, averaged amplitude
+            band_amplitude = np.mean(fft_values[band_mask])
+        else:
+            band_amplitude = 0.0
 
-        band_amplitude = np.max(fft_values[band_filter]) if np.any(band_filter) else 0
+        # Scale by volume (RMS of the input)
         band_amplitude *= volume
         band_amplitudes.append(band_amplitude)
 
     return band_amplitudes
 
+def compute_channel_fft(args):
+    """
+    compute_channel_fft is used in parallel or single-worker mode
+    to compute the FFT for each channel, then process frequency bands.
+
+    Steps:
+        1) For each channel in audio_samples, call compute_fft (using the Hanning window).
+        2) Filter to the positive half of freqs if desired (shown below).
+        3) Use process_frequency_bands(...) to get band amplitudes for each channel.
+
+    Returns:
+        list of lists: band_amplitude_chunks, where each sub-list corresponds
+                      to one channel's band amplitudes.
+    """
+    audio_samples, dummy_padded_samples, volume, frequency_band_chunks = args
+
+    # Compute FFT for all channels
+    fft_magnitudes_list = []
+    for channel_samples in audio_samples:
+        fft_magnitudes = compute_fft(channel_samples)
+        fft_magnitudes_list.append(fft_magnitudes)
+
+    # Frequencies array (same length as the final FFT array)
+    freqs_full = fft_pack.fftfreq(len(fft_magnitudes_list[0]), 1.0 / RATE)
+
+    # Filter only the positive half if you prefer
+    pos_mask = (freqs_full >= 0)
+    freqs_pos = freqs_full[pos_mask]
+
+    # For each channel, keep only positive frequencies
+    # (This ensures we don't double-count negative freq bins.)
+    channel_fft_list = [
+        fft_mags[pos_mask] for fft_mags in fft_magnitudes_list
+    ]
+
+    # Process frequency bands for each channel
+    band_amplitude_chunks = []
+    for fft_values in channel_fft_list:
+        band_amplitude_chunks.append(
+            process_frequency_bands(
+                (fft_values, freqs_pos, frequency_band_chunks, volume)
+            )
+        )
+
+    return band_amplitude_chunks
 
 class EqualizerOpenGLThread(threading.Thread):
     def __init__(self,
@@ -111,7 +166,8 @@ class EqualizerOpenGLThread(threading.Thread):
         # window_size = N_FFT, overlap_size = N_FFT//2 (50%).
         # ---------------------------------------------------
         self.audio_accumulator = AudioBufferAccumulator(window_size=N_FFT,
-                                                        overlap_size=N_FFT // 2)
+                                                        overlap_size=N_FFT // 2,
+                                                        channels=self._channels)
 
         # ----------------------------------------------------------
         # NEW: Throttle parameters
@@ -216,73 +272,166 @@ class EqualizerOpenGLThread(threading.Thread):
             bands.append((float(band_low_freq), float(band_high_freq)))
 
         return bands
-    
-    def create_equalizer(self, audio_data, frequency_bands, noise_threshold=0.1, channels=2):
+
+    def create_equalizer(self,
+                         audio_data: np.ndarray,
+                         frequency_bands: list[tuple[float, float]],
+                         noise_threshold: float = 0.1,
+                         channels: int = 2) -> list[float]:
+        """
+        Compute per-band amplitudes for a block of multi-channel audio data.
+
+        1) Prepare 'audio_samples' (shape = (channels, N_FFT)) from 'audio_data' (shape=(N_FFT, channels)).
+        2) If self._workers > 1, split the bands and compute channel FFT in parallel via 'compute_channel_fft'.
+           Otherwise, do a single-thread fallback with an internal FFT approach.
+        3) Merge results across channels, apply noise threshold.
+        4) Convert to dB scale, then normalize to [0..1].
+
+        Args:
+            audio_data (np.ndarray): shape (N_FFT, channels).
+            frequency_bands (list): list of (low_freq, high_freq) tuples.
+            noise_threshold (float): linear noise threshold (applied before dB scaling).
+            channels (int): number of channels (2 for stereo).
+
+        Returns:
+            list[float]: normalized amplitude for each band in [0..1].
+        """
+        # Transpose so shape = (channels, N_FFT)
         audio_samples = audio_data.T
+        assert audio_samples.shape[0] == channels, (
+            f"Input data has {audio_samples.shape[0]} channels, expected {channels}"
+        )
 
-        # Check that the number of channels in the input data matches the expected number of channels
-        assert audio_samples.shape[0] == channels, f"Input data has {audio_samples.shape[0]} channels, expected {channels}"
-
-        # Calculate the volume of the input audio data
+        # Overall volume of the input (RMS)
         volume = np.sqrt(np.mean(audio_data ** 2))
 
-        if self._workers == 1:
+        # Decide whether to use parallel approach or single-thread fallback
+        if self._workers > 1:
+            # -------------------------------------------------------------
+            # PARALLEL BRANCH
+            # -------------------------------------------------------------
+            # 1) Split frequency_bands into chunks (roughly one per worker, or adapt logic)
+            bands_per_worker = len(frequency_bands) // self._workers
+            # Edge case: if bands_per_worker is 0, every chunk will be empty except the first.
+            # We'll handle that by ensuring we do at least 1 band per chunk.
+            if bands_per_worker < 1:
+                bands_per_worker = 1
+
+            frequency_band_chunks = []
+            start_index = 0
+            while start_index < len(frequency_bands):
+                end_index = start_index + bands_per_worker
+                # slice the bands
+                sub_bands = frequency_bands[start_index:end_index]
+                frequency_band_chunks.append(sub_bands)
+                start_index = end_index
+
+            # 2) We'll pass 'audio_samples' + a dummy array for padded_samples
+            #    to maintain the 'compute_channel_fft' signature.
+            #    Since we're applying the Hanning and zero-padding inside 'compute_fft',
+            #    we can pass a dummy np.zeros(N_FFT) or something similar.
+            padded_samples = np.zeros(N_FFT, dtype=np.float32)
+
+            # 3) Construct the arguments for each chunk
+            parallel_args = []
+            for chunk in frequency_band_chunks:
+                # (audio_samples, padded_samples, volume, chunk)
+                parallel_args.append((audio_samples, padded_samples, volume, chunk))
+
+            # 4) Use our executor to parallelize
+            band_amplitude_chunks = list(
+                self.executor.map(
+                    compute_channel_fft,
+                    parallel_args
+                )
+            )
+
+            # 'band_amplitude_chunks' is a list of results,
+            # each result is: list of [ (band_amplitudes_per_channel) ... ]
+            #
+            # So if we had M chunks, we get M results,
+            # where each result = [ [band_amps for chunk], [band_amps for chunk], ... ] for each channel
+
+            # We'll combine them per channel
+            # equalizer_data = list of channels, each being a list of band amplitudes
+            equalizer_data = [[] for _ in range(channels)]
+
+            # Flatten each chunk
+            for chunk_result in band_amplitude_chunks:
+                # chunk_result is something like:
+                #   [ [band_amps_for_channel0], [band_amps_for_channel1], ... ]
+                # We need to extend them in 'equalizer_data'
+                for ch_index, ch_band_amps in enumerate(chunk_result):
+                    # 'ch_band_amps' is a list of amplitude values for each band in that chunk
+                    # Extend our final list
+                    equalizer_data[ch_index].extend(ch_band_amps)
+
+        else:
+            # -------------------------------------------------------------
+            # SINGLE-THREAD FALLBACK
+            # -------------------------------------------------------------
             equalizer_data = []
 
             for channel_samples in audio_samples:
-                # Apply a window function to reduce leakage effect
-                window = np.blackman(len(channel_samples))
+                # We apply the Hanning window
+                window = np.hanning(len(channel_samples))
                 windowed_samples = channel_samples * window
 
-                # Zero-padding
-                # padded_samples = np.pad(windowed_samples, (0, N_FFT - len(windowed_samples)), 'constant')
+                # Zero-pad if needed
+                if len(channel_samples) < N_FFT:
+                    padded = np.zeros(N_FFT, dtype=windowed_samples.dtype)
+                    padded[:len(channel_samples)] = windowed_samples
+                    fft_values = np.abs(np.fft.fft(padded))
+                else:
+                    fft_values = np.abs(np.fft.fft(windowed_samples))
 
-                fft_values = np.abs(fft_pack.fft(windowed_samples))
+                # Keep only positive freq half
                 freqs_full = fft_pack.fftfreq(len(fft_values), 1.0 / RATE)
+                pos_mask = (freqs_full >= 0)
+                fft_values = fft_values[pos_mask]
+                freqs = freqs_full[pos_mask]
 
-                # Keep only freqs >= 0
-                positive_mask = freqs_full >= 0
-                fft_values = fft_values[positive_mask]
-                freqs = freqs_full[positive_mask]
-
+                # For each band, compute MEAN amplitude of the bins, scaled by volume
                 band_amplitudes = []
-                for low_freq, high_freq in frequency_bands:
-                    # band_filter = np.logical_and(freqs >= low_freq, freqs <= high_freq)
+                for (low_freq, high_freq) in frequency_bands:
                     band_filter = (freqs >= low_freq) & (freqs <= high_freq)
-
-                    if np.any(band_filter):
-                        band_amplitude = np.mean(fft_values[band_filter]) * np.sum(band_filter)
-                    else:
-                        band_amplitude = 0
-
-                    # Scale the amplitude based on the actual volume
-                    band_amplitude *= volume
-                    band_amplitudes.append(band_amplitude)
+                    amp = np.mean(fft_values[band_filter]) if np.any(band_filter) else 0
+                    amp *= volume
+                    band_amplitudes.append(amp)
 
                 equalizer_data.append(band_amplitudes)
-        else:
-            bands_per_worker = len(frequency_bands) // self._workers
 
-            # Split frequency bands into smaller chunks for each worker
-            frequency_band_chunks = [frequency_bands[i:i + bands_per_worker] for i in range(0, len(frequency_bands), bands_per_worker)]
-
-            padded_samples = np.zeros(N_FFT)
-
-            # Compute channel FFT and process frequency bands in parallel
-            band_amplitude_chunks = list(self.executor.map(compute_channel_fft, [(audio_samples, padded_samples, volume, chunk) for chunk in frequency_band_chunks]))
-
-            equalizer_data = [[] for _ in range(channels)]
-
-            # Flatten the list of band_amplitude_chunks and group by channel
-            for chunk in band_amplitude_chunks:
-                for channel_index, channel_data in enumerate(chunk):
-                    equalizer_data[channel_index].extend(channel_data)
-
+        # -------------------------------------------------------------
+        # Merge channels => average band amplitudes across channels
+        # -------------------------------------------------------------
+        # 'equalizer_data' is shape (channels, total_num_bands).
         avg_band_amplitudes = np.mean(equalizer_data, axis=0)
-        filtered_amplitudes = [amp if amp >= noise_threshold else 0 for amp in avg_band_amplitudes]
-        max_amplitude = max(filtered_amplitudes)
-        epsilon = 1e-12  # Add a small value to prevent division by very small numbers
-        normalized_amplitudes = [(amplitude / (max_amplitude + epsilon)) if max_amplitude > 0 else 0 for amplitude in filtered_amplitudes]
+
+        # 1) Linear noise threshold
+        filtered_amplitudes = [
+            amp if amp >= noise_threshold else 0
+            for amp in avg_band_amplitudes
+        ]
+
+        # 2) Convert to dB scale
+        epsilon = 1e-12
+        dB_values = [
+            20.0 * np.log10(amp + epsilon) for amp in filtered_amplitudes
+        ]
+
+        # 3) Find min and max
+        min_db = min(dB_values)
+        max_db = max(dB_values)
+        db_range = max_db - min_db
+
+        # 4) Normalize dB => [0..1]
+        if db_range < 1e-9:
+            normalized_amplitudes = [0.0 for _ in dB_values]
+        else:
+            normalized_amplitudes = [
+                (db - min_db) / db_range
+                for db in dB_values
+            ]
 
         return normalized_amplitudes
     
