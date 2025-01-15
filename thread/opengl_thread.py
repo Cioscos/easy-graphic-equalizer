@@ -14,7 +14,7 @@ from thread.AudioBufferAccumulator import AudioBufferAccumulator
 
 RATE = 44100
 # N_FFT= 32768
-N_FFT = 4096
+N_FFT = 2048
 MIN_FREQ = 20
 MAX_FREQ = 20000
 
@@ -61,7 +61,7 @@ def process_frequency_bands(args):
         band_mask = np.logical_and(freqs >= low_freq, freqs <= high_freq)
         if np.any(band_mask):
             # Use mean for a smoother, averaged amplitude
-            band_amplitude = np.mean(fft_values[band_mask])
+            band_amplitude = 0.7 * np.mean(fft_values[band_mask]) + 0.3 * np.max(fft_values[band_mask])
         else:
             band_amplitude = 0.0
 
