@@ -10,8 +10,11 @@ import numpy as np
 import scipy.fftpack as fft_pack
 from PIL import Image
 
+from thread.AudioBufferAccumulator import AudioBufferAccumulator
+
 RATE = 44100
-N_FFT= 32768
+# N_FFT= 32768
+N_FFT = 4096
 MIN_FREQ = 20
 MAX_FREQ = 20000
 
@@ -52,11 +55,7 @@ def process_frequency_bands(args):
     for low_freq, high_freq in bands:
         band_filter = np.logical_and(freqs >= low_freq, freqs <= high_freq)
 
-        if np.any(band_filter):
-            band_amplitude = np.mean(fft_values[band_filter]) * np.sum(band_filter)
-        else:
-            band_amplitude = 0
-
+        band_amplitude = np.max(fft_values[band_filter]) if np.any(band_filter) else 0
         band_amplitude *= volume
         band_amplitudes.append(band_amplitude)
 
@@ -88,7 +87,7 @@ class EqualizerOpenGLThread(threading.Thread):
         self.window_close_callback = window_close_callback
         self._auto_workers = auto_workers
         # List of temporary amplitudes to create an animation effect
-        self.frequency_bands = self.generate_frequency_bands(self._n_bands)
+        self.frequency_bands = self.generate_bin_based_bands(self._n_bands)
 
         self.previous_amplitudes = [0] * len(self.frequency_bands)
         self.vbos = []
@@ -106,6 +105,23 @@ class EqualizerOpenGLThread(threading.Thread):
         self._workers = self._calculate_workers(n_bands) if auto_workers else workers
 
         self.executor = ProcessPoolExecutor(max_workers=self._workers)
+
+        # ---------------------------------------------------
+        # Instantiate the AudioBufferAccumulator for overlap
+        # window_size = N_FFT, overlap_size = N_FFT//2 (50%).
+        # ---------------------------------------------------
+        self.audio_accumulator = AudioBufferAccumulator(window_size=N_FFT,
+                                                        overlap_size=N_FFT // 2)
+
+        # ----------------------------------------------------------
+        # NEW: Throttle parameters
+        # ----------------------------------------------------------
+        self.fft_interval = 0.02  # e.g., 40 ms between FFT computations (~25 FPS in the audio domain)
+        self.last_fft_time = 0.0
+
+        # Keep track of the latest amplitudes we computed
+        # We will draw these at every render frame, but they only update after each FFT.
+        self.latest_amplitudes = [0.0] * self._n_bands
 
     def _calculate_workers(self, bands:int) -> int:
         """
@@ -128,13 +144,76 @@ class EqualizerOpenGLThread(threading.Thread):
         else:
             return 5
 
-    def generate_frequency_bands(self, num_bands):
-        min_log_freq = np.log10(MIN_FREQ)
-        max_log_freq = np.log10(MAX_FREQ)
+    def generate_bin_based_bands(self, num_bands: int) -> list[tuple[float, float]]:
+        """
+        Generate frequency bands by splitting the actual positive FFT bin frequencies
+        (in the range [MIN_FREQ, MAX_FREQ]) into 'num_bands' groups. We do this in
+        approximate log space, ensuring each group has at least one bin.
 
-        log_freqs = np.logspace(min_log_freq, max_log_freq, num=num_bands + 1)
+        Returns:
+            list of (float, float): A list of (low_freq, high_freq) tuples, where each
+                                    tuple covers a contiguous slice of the FFT bins.
+        """
 
-        bands = [(log_freqs[i], log_freqs[i + 1]) for i in range(num_bands)]
+        # 1. Compute all FFT bin frequencies for N_FFT.
+        #    'fftpack.fftfreq' returns negative freqs as well; we only keep the positive half.
+        freqs = fft_pack.fftfreq(N_FFT, d=1.0 / RATE)
+        half_n = N_FFT // 2  # Index for Nyquist
+        positive_freqs = freqs[:half_n + 1]  # shape: (N_FFT/2 + 1,)
+
+        # 2. Exclude freq=0 (DC) if desired, or treat it as its own band.
+        #    We'll skip it here for a purely log-based distribution.
+        #    So we'll start from index 1 to half_n (inclusive).
+        #    Then also mask out anything above MAX_FREQ or below MIN_FREQ.
+        valid_mask = (positive_freqs >= MIN_FREQ) & (positive_freqs <= MAX_FREQ)
+        valid_indices = np.where(valid_mask)[0]
+        if len(valid_indices) == 0:
+            # If no bins in [MIN_FREQ, MAX_FREQ], return an empty list
+            return []
+
+        # 3. Extract the valid frequencies (>= MIN_FREQ and <= MAX_FREQ)
+        valid_freqs = positive_freqs[valid_indices]  # shape: (some_number_of_bins,)
+        # We'll convert them to log space to do an approximate log-split.
+        log_valid_freqs = np.log10(valid_freqs)
+
+        # 4. Create 'num_bands' intervals in log space between min(valid) and max(valid).
+        #    We do num_bands slices => num_bands + 1 edges.
+        min_log = log_valid_freqs[0]  # log10 of the lowest bin >= MIN_FREQ
+        max_log = log_valid_freqs[-1]  # log10 of the highest bin <= MAX_FREQ
+        if num_bands > (len(valid_freqs)):
+            # If you request more bands than bins, you'll end up with some 1-bin or 0-bin groups.
+            # We'll still do it, but you'll see small or empty groups.
+            pass
+
+        log_edges = np.linspace(min_log, max_log, num_bands + 1)  # shape: (num_bands+1,)
+
+        # 5. Bin-based grouping: for each interval [log_edges[i], log_edges[i+1]),
+        #    gather the bin indices that fall in that log range.
+        bands = []
+        idx_start = 0  # We'll walk through valid_freqs in ascending order
+        for i in range(num_bands):
+            low_edge = log_edges[i]
+            high_edge = log_edges[i + 1]
+
+            # Identify the subset of valid_freqs in that log range
+            # We do ">= low_edge" and "< high_edge" so that the last band might
+            # absorb the top edge if inclusive is desired. Adjust as needed.
+            band_mask = (log_valid_freqs >= low_edge) & (log_valid_freqs < high_edge)
+            band_indices = np.where(band_mask)[0]
+
+            if len(band_indices) == 0:
+                # No bins in this interval => we could skip or attempt a merge.
+                # We'll simply skip here, or you could store a placeholder band.
+                continue
+
+            # The actual frequencies in that group
+            group_freqs = valid_freqs[band_indices]
+
+            # The band spans from the min to max freq in that group
+            band_low_freq = group_freqs[0]
+            band_high_freq = group_freqs[-1]
+
+            bands.append((float(band_low_freq), float(band_high_freq)))
 
         return bands
     
@@ -156,14 +235,20 @@ class EqualizerOpenGLThread(threading.Thread):
                 windowed_samples = channel_samples * window
 
                 # Zero-padding
-                padded_samples = np.pad(windowed_samples, (0, N_FFT - len(windowed_samples)), 'constant')
+                # padded_samples = np.pad(windowed_samples, (0, N_FFT - len(windowed_samples)), 'constant')
 
-                fft_values = np.abs(fft_pack.fft(padded_samples))
-                freqs = fft_pack.fftfreq(len(fft_values), 1.0 / RATE)
+                fft_values = np.abs(fft_pack.fft(windowed_samples))
+                freqs_full = fft_pack.fftfreq(len(fft_values), 1.0 / RATE)
+
+                # Keep only freqs >= 0
+                positive_mask = freqs_full >= 0
+                fft_values = fft_values[positive_mask]
+                freqs = freqs_full[positive_mask]
 
                 band_amplitudes = []
                 for low_freq, high_freq in frequency_bands:
-                    band_filter = np.logical_and(freqs >= low_freq, freqs <= high_freq)
+                    # band_filter = np.logical_and(freqs >= low_freq, freqs <= high_freq)
+                    band_filter = (freqs >= low_freq) & (freqs <= high_freq)
 
                     if np.any(band_filter):
                         band_amplitude = np.mean(fft_values[band_filter]) * np.sum(band_filter)
@@ -217,7 +302,7 @@ class EqualizerOpenGLThread(threading.Thread):
 
         elif message_type == 'set_frequency_bands':
             self._n_bands = message["value"]
-            self.frequency_bands = self.generate_frequency_bands(message["value"])
+            self.frequency_bands = self.generate_bin_based_bands(message["value"])
             self.previous_amplitudes = [0] * len(self.frequency_bands)
             # Clear and reinitialize VBOs
             glDeleteBuffers(len(self.vbos), self.vbos)
@@ -313,6 +398,9 @@ class EqualizerOpenGLThread(threading.Thread):
         frame_duration = 1 / self.frame_rate
         previous_time = time.time()
 
+        # -------------------------
+        # MAIN LOOP
+        # -------------------------
         while not glfw.window_should_close(window) and not self.stop_event.is_set():
             # Process messages from the control queue
             while not self._control_queue.empty():
@@ -322,23 +410,40 @@ class EqualizerOpenGLThread(threading.Thread):
             current_time = time.time()
             elapsed_time = current_time - previous_time
 
-            # Consume data from the queue and update the audio buffer
+            # 1) Pull all available chunks from the queue
             while not self._audio_queue.empty():
                 audio_buffer = self._audio_queue.get(block=False)
+                # audio_buffer shape: (CHUNK, channels) -> e.g., (1024, 2) if stereo
+                self.audio_accumulator.add_samples(audio_buffer)
 
-            if audio_buffer is not None:
-                amplitudes = self.create_equalizer(audio_buffer, self.frequency_bands, self._noise_threshold, self._channels)
+            # 2) Throttle the FFT
+            #    Only compute a new FFT if 'fft_interval' time has passed.
+            if (current_time - self.last_fft_time) >= self.fft_interval:
+                # Attempt to retrieve enough samples for a new FFT
+                fft_window = self.audio_accumulator.get_window_for_fft()
+                if fft_window.size > 0:
+                    # shape: (N_FFT, channels)
+                    amplitudes = self.create_equalizer(
+                        audio_data=fft_window,
+                        frequency_bands=self.frequency_bands,
+                        noise_threshold=self._noise_threshold,
+                        channels=self._channels
+                    )
+                    self.latest_amplitudes = amplitudes
+                self.last_fft_time = current_time
 
-                # exponential smoothing
-                smooth_factor = 1 - math.exp(-elapsed_time / (frame_duration * 5))
-                # Render the bars using OpenGL
-                self.draw_bars(amplitudes, smooth_factor)
+            # 3) Exponential smoothing (optional)
+            #    You might still do some smoothing each frame if you want
+            smooth_factor = 1 - math.exp(-elapsed_time / (frame_duration * 2))
+
+            # 4) Draw bars, always using self.latest_amplitudes
+            self.draw_bars(self.latest_amplitudes, smooth_factor)
 
             previous_time = current_time
             glfw.swap_buffers(window)
             glfw.poll_events()
 
-        # Clean up resources before exiting
+        # Cleanup
         glfw.destroy_window(window)
         glfw.terminate()
 
