@@ -2,7 +2,7 @@ import threading
 import math
 import time
 from concurrent.futures import ProcessPoolExecutor
-from typing import Optional, Callable
+from typing import Optional, Callable, List, Tuple
 
 import glfw
 from OpenGL.GL import *
@@ -13,8 +13,7 @@ from PIL import Image
 from thread.AudioBufferAccumulator import AudioBufferAccumulator
 
 RATE = 44100
-# N_FFT= 32768
-N_FFT = 2048
+N_FFT = 4096
 MIN_FREQ = 20
 MAX_FREQ = 20000
 
@@ -69,6 +68,11 @@ def process_frequency_bands(args):
         band_amplitude *= volume
         band_amplitudes.append(band_amplitude)
 
+    # LOG
+    print('LOGGING RAW AMPLITUDES')
+    for i, amp in enumerate(band_amplitudes):
+        print(f"Raw band {i} amplitude = {amp:.4f}")
+
     return band_amplitudes
 
 def compute_channel_fft(args):
@@ -117,6 +121,7 @@ def compute_channel_fft(args):
 
     return band_amplitude_chunks
 
+
 class EqualizerOpenGLThread(threading.Thread):
     def __init__(self,
                  audio_queue,
@@ -126,10 +131,10 @@ class EqualizerOpenGLThread(threading.Thread):
                  control_queue=None,
                  workers: int = 5,
                  auto_workers: bool = False,
-                 monitor= None,
-                 bg_image: Optional[Image.Image]= None,
-                 bg_alpha: Optional[float]=None,
-                 window_close_callback: Callable= None):
+                 monitor=None,
+                 bg_image: Optional[Image.Image] = None,
+                 bg_alpha: Optional[float] = None,
+                 window_close_callback: Callable = None):
         super().__init__()
         self._audio_queue = audio_queue
         self._control_queue = control_queue
@@ -150,7 +155,7 @@ class EqualizerOpenGLThread(threading.Thread):
             [0, 0], [1, 0], [1, 1],
             [0, 0], [1, 1], [0, 1]
         ], dtype=np.float32)
-        
+
         self.stop_event = threading.Event()
         self._background_texture = None
 
@@ -202,76 +207,148 @@ class EqualizerOpenGLThread(threading.Thread):
 
     def generate_bin_based_bands(self, num_bands: int) -> list[tuple[float, float]]:
         """
-        Generate frequency bands by splitting the actual positive FFT bin frequencies
-        (in the range [MIN_FREQ, MAX_FREQ]) into 'num_bands' groups. We do this in
-        approximate log space, ensuring each group has at least one bin.
+        Generates up to 'num_bands' ascending frequency bands in log scale
+        over [MIN_FREQ, MAX_FREQ], merging empty bands to avoid reversed or
+        duplicated intervals. All diagnostic logs remain intact.
+
+        1) We compute all positive FFT bin frequencies in [MIN_FREQ, MAX_FREQ].
+        2) We create an array of log-spaced edges (length = num_bands + 1).
+        3) We build the final list of (low_freq, high_freq) pairs by scanning
+           from left (lowest edge) to right (highest edge), merging any
+           "empty" interval with subsequent edges so we never produce
+           reversed or duplicate intervals.
+
+        Args:
+            num_bands (int): Desired number of bands to generate.
 
         Returns:
-            list of (float, float): A list of (low_freq, high_freq) tuples, where each
-                                    tuple covers a contiguous slice of the FFT bins.
+            list[tuple[float, float]]:
+                A list of ascending (low_freq, high_freq) pairs. If there are
+                not enough bins to fill all bands distinctly, you may end up
+                with fewer than 'num_bands' bands in practice.
         """
+        import numpy as np
+        import numpy.fft as fft_pack
 
-        # 1. Compute all FFT bin frequencies for N_FFT.
-        #    'fftpack.fftfreq' returns negative freqs as well; we only keep the positive half.
+        # LOG: Start
+        print("LOG: generate_bin_based_bands -> Start")
+
+        # 1) Compute positive frequencies for N_FFT
         freqs = fft_pack.fftfreq(N_FFT, d=1.0 / RATE)
-        half_n = N_FFT // 2  # Index for Nyquist
-        positive_freqs = freqs[:half_n + 1]  # shape: (N_FFT/2 + 1,)
+        half_n = N_FFT // 2
+        positive_freqs = freqs[:half_n + 1]
 
-        # 2. Exclude freq=0 (DC) if desired, or treat it as its own band.
-        #    We'll skip it here for a purely log-based distribution.
-        #    So we'll start from index 1 to half_n (inclusive).
-        #    Then also mask out anything above MAX_FREQ or below MIN_FREQ.
+        # 2) Mask to [MIN_FREQ, MAX_FREQ]
         valid_mask = (positive_freqs >= MIN_FREQ) & (positive_freqs <= MAX_FREQ)
         valid_indices = np.where(valid_mask)[0]
-        if len(valid_indices) == 0:
-            # If no bins in [MIN_FREQ, MAX_FREQ], return an empty list
-            return []
 
-        # 3. Extract the valid frequencies (>= MIN_FREQ and <= MAX_FREQ)
-        valid_freqs = positive_freqs[valid_indices]  # shape: (some_number_of_bins,)
-        # We'll convert them to log space to do an approximate log-split.
+        # LOG: how many bins fall in [MIN_FREQ, MAX_FREQ]
+        print(f"LOG: valid_indices size in range [{MIN_FREQ}, {MAX_FREQ}] -> {len(valid_indices)}")
+
+        if len(valid_indices) == 0:
+            print("LOG: No valid bins in the specified range. Returning fallback bands.")
+            return [(float(MIN_FREQ), float(MAX_FREQ))] * num_bands
+
+        valid_freqs = positive_freqs[valid_indices]
         log_valid_freqs = np.log10(valid_freqs)
 
-        # 4. Create 'num_bands' intervals in log space between min(valid) and max(valid).
-        #    We do num_bands slices => num_bands + 1 edges.
-        min_log = log_valid_freqs[0]  # log10 of the lowest bin >= MIN_FREQ
-        max_log = log_valid_freqs[-1]  # log10 of the highest bin <= MAX_FREQ
-        if num_bands > (len(valid_freqs)):
-            # If you request more bands than bins, you'll end up with some 1-bin or 0-bin groups.
-            # We'll still do it, but you'll see small or empty groups.
-            pass
+        min_log = float(log_valid_freqs[0])
+        max_log = float(log_valid_freqs[-1])
 
-        log_edges = np.linspace(min_log, max_log, num_bands + 1)  # shape: (num_bands+1,)
+        # 3) We initially create log-spaced edges, but we won't modify them in-place.
+        initial_log_edges = np.linspace(min_log, max_log, num_bands + 1)
 
-        # 5. Bin-based grouping: for each interval [log_edges[i], log_edges[i+1]),
-        #    gather the bin indices that fall in that log range.
-        bands = []
-        idx_start = 0  # We'll walk through valid_freqs in ascending order
-        for i in range(num_bands):
-            low_edge = log_edges[i]
-            high_edge = log_edges[i + 1]
+        print(f"LOG: generate_bin_based_bands -> min_log={min_log:.4f}, max_log={max_log:.4f}")
+        print(f"LOG: initial_log_edges={initial_log_edges}")
 
-            # Identify the subset of valid_freqs in that log range
-            # We do ">= low_edge" and "< high_edge" so that the last band might
-            # absorb the top edge if inclusive is desired. Adjust as needed.
-            band_mask = (log_valid_freqs >= low_edge) & (log_valid_freqs < high_edge)
+        # We'll build the final list of frequency bands here:
+        bands: list[tuple[float, float]] = []
+
+        # We'll keep track of the current "starting edge" index.
+        edge_idx = 0
+        # We'll proceed until we form 'num_bands' or run out of edges.
+        while len(bands) < num_bands and edge_idx < len(initial_log_edges) - 1:
+            low_edge = float(initial_log_edges[edge_idx])
+            high_edge = float(initial_log_edges[edge_idx + 1])
+
+            band_low_freq = float(10.0 ** low_edge)
+            band_high_freq = float(10.0 ** high_edge)
+
+            # LOG: check ascending
+            if band_low_freq > band_high_freq:
+                # Safety check: if for some reason they got reversed, swap them
+                print(f"LOG WARNING: Reversed edges found! Swapping: {band_low_freq}, {band_high_freq}")
+                band_low_freq, band_high_freq = band_high_freq, band_low_freq
+
+            # Identify which bins fall in [band_low_freq, band_high_freq)
+            band_mask = (valid_freqs >= band_low_freq) & (valid_freqs < band_high_freq)
             band_indices = np.where(band_mask)[0]
 
+            # LOG
+            print(f"LOG: Checking band #{len(bands)} from {band_low_freq:.2f} Hz to {band_high_freq:.2f} Hz")
+            print(f"LOG:   -> Found {len(band_indices)} bins in that band")
+
             if len(band_indices) == 0:
-                # No bins in this interval => we could skip or attempt a merge.
-                # We'll simply skip here, or you could store a placeholder band.
-                continue
+                # Merge this empty band with subsequent edges, if possible
+                merge_index = edge_idx + 2
+                merged = False
 
-            # The actual frequencies in that group
-            group_freqs = valid_freqs[band_indices]
+                while not merged and merge_index < len(initial_log_edges):
+                    candidate_high_edge = float(initial_log_edges[merge_index])
+                    candidate_high_freq = float(10.0 ** candidate_high_edge)
 
-            # The band spans from the min to max freq in that group
-            band_low_freq = group_freqs[0]
-            band_high_freq = group_freqs[-1]
+                    # Check how many bins are in [band_low_freq, candidate_high_freq)
+                    band_mask2 = (valid_freqs >= band_low_freq) & (valid_freqs < candidate_high_freq)
+                    band_indices2 = np.where(band_mask2)[0]
 
-            bands.append((float(band_low_freq), float(band_high_freq)))
+                    if len(band_indices2) > 0:
+                        # We found a bigger interval that is not empty
+                        print(
+                            f"LOG:   -> Merging empty band up to edge {merge_index}, freq={candidate_high_freq:.2f} Hz")
+                        high_edge = candidate_high_edge
+                        band_high_freq = candidate_high_freq
+                        merged = True
+                        # We'll "skip" all edges from edge_idx+1 to merge_index
+                        edge_idx = merge_index - 1  # because we'll do edge_idx+1 at the end
+                    else:
+                        merge_index += 1
 
+                # Re-check if still reversed
+                if band_low_freq > band_high_freq:
+                    print(f"LOG WARNING: After merging, reversed edges again! Swapping.")
+                    band_low_freq, band_high_freq = band_high_freq, band_low_freq
+
+            # Now we finalize this band
+            # (Even if it's still empty, we'll add it so we don't loop forever.)
+            bands.append((band_low_freq, band_high_freq))
+            edge_idx += 1
+
+        print(f"[generate_bin_based_bands] Requested: {num_bands}, Final: {len(bands)}")
+        for idx, (lf, hf) in enumerate(bands):
+            print(f"  BAND #{idx}: {lf:.2f} -> {hf:.2f}")
+
+        # LOG: End
+        print("LOG: generate_bin_based_bands -> End")
         return bands
+
+    def apply_frequency_shaping(self,
+                                band_amplitudes: List[float],
+                                frequency_bands: List[Tuple[float, float]]) -> List[float]:
+        """
+        Boost sulle alte frequenze per enfatizzarle (solo esempio).
+        """
+        shaped_amplitudes = []
+        for i, (amp, (f_low, f_high)) in enumerate(zip(band_amplitudes, frequency_bands)):
+            center_freq = (f_low + f_high) / 2.0
+            if center_freq > 4000.0:
+                factor = 1.0 + np.log10(center_freq / 4000.0 + 1e-12)
+                new_val = amp * factor
+                # LOG a scopo diagnostico
+                print(f"LOG: apply_frequency_shaping -> Band {i} (center={center_freq:.2f}Hz), old={amp:.4f}, new={new_val:.4f}")
+                shaped_amplitudes.append(new_val)
+            else:
+                shaped_amplitudes.append(amp)
+        return shaped_amplitudes
 
     def create_equalizer(self,
                          audio_data: np.ndarray,
@@ -296,8 +373,11 @@ class EqualizerOpenGLThread(threading.Thread):
         Returns:
             list[float]: normalized amplitude for each band in [0..1].
         """
+        # LOG dimensioni
+        print(f"LOG: create_equalizer -> audio_data.shape={audio_data.shape}, freq_bands={len(frequency_bands)}")
+
         # Transpose so shape = (channels, N_FFT)
-        audio_samples = audio_data.T
+        audio_samples: np.ndarray = audio_data.T
         assert audio_samples.shape[0] == channels, (
             f"Input data has {audio_samples.shape[0]} channels, expected {channels}"
         )
@@ -370,14 +450,12 @@ class EqualizerOpenGLThread(threading.Thread):
             # -------------------------------------------------------------
             # SINGLE-THREAD FALLBACK
             # -------------------------------------------------------------
+            # 2) Calcolo dell'ampiezza di canale e unione (mono/stereo)
             equalizer_data = []
-
-            for channel_samples in audio_samples:
-                # We apply the Hanning window
+            for ch_idx, channel_samples in enumerate(audio_samples):
                 window = np.hanning(len(channel_samples))
                 windowed_samples = channel_samples * window
 
-                # Zero-pad if needed
                 if len(channel_samples) < N_FFT:
                     padded = np.zeros(N_FFT, dtype=windowed_samples.dtype)
                     padded[:len(channel_samples)] = windowed_samples
@@ -385,54 +463,64 @@ class EqualizerOpenGLThread(threading.Thread):
                 else:
                     fft_values = np.abs(np.fft.fft(windowed_samples))
 
-                # Keep only positive freq half
+                # Keep only le frequenze positive
                 freqs_full = fft_pack.fftfreq(len(fft_values), 1.0 / RATE)
                 pos_mask = (freqs_full >= 0)
                 fft_values = fft_values[pos_mask]
                 freqs = freqs_full[pos_mask]
 
-                # For each band, compute MEAN amplitude of the bins, scaled by volume
+                # Calcolo RMS come "volume"
+                volume = np.sqrt(np.mean(channel_samples ** 2))
+                print(f"LOG: Channel {ch_idx} volume (RMS) = {volume:.4f}")
+
                 band_amplitudes = []
-                for (low_freq, high_freq) in frequency_bands:
-                    band_filter = (freqs >= low_freq) & (freqs <= high_freq)
-                    amp = np.mean(fft_values[band_filter]) if np.any(band_filter) else 0
+                for i, (low_freq, high_freq) in enumerate(frequency_bands):
+                    band_mask = (freqs >= low_freq) & (freqs <= high_freq)
+                    amp = np.mean(fft_values[band_mask]) if np.any(band_mask) else 0
                     amp *= volume
+                    # LOG: amplitude prima della shaping
+                    print(f"LOG:   Ch{ch_idx} Band {i} -> freq=[{low_freq:.2f},{high_freq:.2f}], bins={np.count_nonzero(band_mask)}, amp={amp:.4f}")
                     band_amplitudes.append(amp)
 
                 equalizer_data.append(band_amplitudes)
 
-        # -------------------------------------------------------------
-        # Merge channels => average band amplitudes across channels
-        # -------------------------------------------------------------
-        # 'equalizer_data' is shape (channels, total_num_bands).
+        # 3) Merge canali (media)
         avg_band_amplitudes = np.mean(equalizer_data, axis=0)
 
-        # 1) Linear noise threshold
+        print(f"LOG: AVERAGE BANDS AMPLITUDES (Before threshold) = {[f'{v:.4f}' for v in avg_band_amplitudes]}")
+
+        # 4) Applica soglia di rumore lineare
         filtered_amplitudes = [
             amp if amp >= noise_threshold else 0
             for amp in avg_band_amplitudes
         ]
+        print(f"LOG: After Noise Threshold {noise_threshold} -> {filtered_amplitudes}")
 
-        # 2) Convert to dB scale
+        # 5) (NOVITÀ) Applichiamo frequency shaping sulle ampiezze lineari
+        #    per "pompare" alcune aree, ad esempio le alte frequenze.
+        shaped_amplitudes = self.apply_frequency_shaping(filtered_amplitudes, frequency_bands)
+        print(f"LOG: After freq shaping -> {shaped_amplitudes}")
+
+        # 6) Convertiamo in dB
         epsilon = 1e-12
-        dB_values = [
-            20.0 * np.log10(amp + epsilon) for amp in filtered_amplitudes
-        ]
+        dB_values = [20.0 * np.log10(amp + epsilon) for amp in shaped_amplitudes]
 
-        # 3) Find min and max
+        offset_db = -10.0  # esempio di offset
+        dB_values = [db + offset_db for db in dB_values]
+
         min_db = min(dB_values)
         max_db = max(dB_values)
         db_range = max_db - min_db
 
-        # 4) Normalize dB => [0..1]
+        print(f"LOG: dB range -> min={min_db:.2f}, max={max_db:.2f}, range={db_range:.2f}")
+
+        # 7) Normalizzazione [0..1]
         if db_range < 1e-9:
             normalized_amplitudes = [0.0 for _ in dB_values]
         else:
-            normalized_amplitudes = [
-                (db - min_db) / db_range
-                for db in dB_values
-            ]
+            normalized_amplitudes = [(db - min_db) / db_range for db in dB_values]
 
+        print(f"LOG: normalized final amps -> {normalized_amplitudes}")
         return normalized_amplitudes
     
     def init_vbos(self):
@@ -572,12 +660,14 @@ class EqualizerOpenGLThread(threading.Thread):
                 fft_window = self.audio_accumulator.get_window_for_fft()
                 if fft_window.size > 0:
                     # shape: (N_FFT, channels)
+                    print('LOG: Start log')
                     amplitudes = self.create_equalizer(
                         audio_data=fft_window,
                         frequency_bands=self.frequency_bands,
                         noise_threshold=self._noise_threshold,
                         channels=self._channels
                     )
+                    print('LOG: Finish log')
                     self.latest_amplitudes = amplitudes
                 self.last_fft_time = current_time
 
