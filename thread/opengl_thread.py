@@ -18,8 +18,9 @@ N_FFT = 4096
 MIN_FREQ = 20
 MAX_FREQ = 20000
 
+GENERAL_LOG = False
 FFT_LOGS = False
-PERF_LOGS = True
+PERF_LOGS = False
 
 
 def compute_fft(channel_samples: np.ndarray) -> np.ndarray:
@@ -154,12 +155,10 @@ class EqualizerOpenGLThread(threading.Thread):
         # List of temporary amplitudes to create an animation effect
         self.frequency_bands = self.generate_bin_based_bands(self._n_bands)
 
-        self.previous_amplitudes = [0] * len(self.frequency_bands)
+        self.previous_amplitudes = [0.0] * len(self.frequency_bands)
+
+        # We create one VBO per bar
         self.vbos = []
-        self.bar_vertices = np.array([
-            [0, 0], [1, 0], [1, 1],
-            [0, 0], [1, 1], [0, 1]
-        ], dtype=np.float32)
 
         self.stop_event = threading.Event()
         self._background_texture = None
@@ -546,11 +545,25 @@ class EqualizerOpenGLThread(threading.Thread):
         return normalized_amplitudes
     
     def init_vbos(self):
+        """
+       Create exactly len(self.frequency_bands) VBOs.
+       Each bar it will be drawn with self.vbos[i].
+       We'll fill them dynamically in 'draw_bars' via glBufferSubData.
+       """
+        # Delete old VBOs if they exist (to avoid resource leaks)
+        if self.vbos:
+            glDeleteBuffers(len(self.vbos), self.vbos)
+
         self.vbos = []
-        for _ in range(len(self.frequency_bands)):
+        count = len(self.frequency_bands)
+        for _ in range(count):
             vbo = glGenBuffers(1)
             glBindBuffer(GL_ARRAY_BUFFER, vbo)
-            glBufferData(GL_ARRAY_BUFFER, self.bar_vertices.nbytes, self.bar_vertices, GL_DYNAMIC_DRAW)
+            # We allocate enough space for 6 vertices (x,y) for a rectangle,
+            # but we won't fill it here. We fill it in draw_bars with glBufferSubData.
+            # 6 vertices * 2 floats = 12 floats. Each float = 4 bytes -> 48 bytes
+            nbytes = 6 * 2 * 4
+            glBufferData(GL_ARRAY_BUFFER, nbytes, None, GL_DYNAMIC_DRAW)
             self.vbos.append(vbo)
 
     def process_control_message(self, message):
@@ -683,7 +696,8 @@ class EqualizerOpenGLThread(threading.Thread):
                 fft_window = self.audio_accumulator.get_window_for_fft()
                 if fft_window.size > 0:
                     # shape: (N_FFT, channels)
-                    print('LOG: Start log')
+                    if GENERAL_LOG:
+                        print('LOG: Start log')
                     t0 = time.time()
                     amplitudes = self.create_equalizer(
                         audio_data=fft_window,
@@ -711,9 +725,14 @@ class EqualizerOpenGLThread(threading.Thread):
             if PERF_LOGS:
                 frame_end_time = time.time()
                 frame_ms = (frame_end_time - frame_start_time) * 1000.0
-                print(f"PERF LOG: FrameTime = {frame_ms:.2f}ms (FPS ~ {1000.0 / frame_ms:.1f})")
+                if frame_ms > 0:
+                    fps = 1000.0 / frame_ms
+                    print(f"PERF LOG: FrameTime = {frame_ms:.2f}ms (FPS ~ {fps:.1f})")
+                else:
+                    print(f"PERF LOG: FrameTime = {frame_ms:.2f}ms (FPS ~ N/A)")
 
-            print('LOG: Finish log')
+            if GENERAL_LOG:
+                print('LOG: Finish log')
 
         # Cleanup
         glfw.destroy_window(window)
@@ -728,60 +747,57 @@ class EqualizerOpenGLThread(threading.Thread):
         if key == glfw.KEY_ESCAPE and action == glfw.PRESS:
             glfw.set_window_should_close(window, True)
             self.stop()
-            self.window_close_callback()
+            if self.window_close_callback:
+                self.window_close_callback()
 
     def update_texture_alpha(self):
         self._bg_image.putalpha(int(255 * self._bg_alpha))
         self._background_texture = self.load_texture()
 
     def load_texture(self):
+        if not self._bg_image:
+            # If for some reason it's None, skip
+            return 0
+
         im = self._bg_image.transpose(Transpose.FLIP_TOP_BOTTOM)
         im_data = im.convert('RGBA').tobytes()
-
         width, height = im.size
 
         texture = glGenTextures(1)
         glBindTexture(GL_TEXTURE_2D, texture)
-
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR)
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR)
-
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, im_data)
-
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, width, height, 0, GL_RGBA,
+                     GL_UNSIGNED_BYTE, im_data)
         return texture
     
     def draw_background(self):
+        # Old-school immediate mode for background quad
         glBindTexture(GL_TEXTURE_2D, self._background_texture)
-
         glEnable(GL_TEXTURE_2D)
-        glColor3f(1.0, 1.0, 1.0)  # Set the color to white so the texture is not tinted
+        glColor3f(1.0, 1.0, 1.0)
         glBegin(GL_QUADS)
-
-        glTexCoord2f(0, 0)
-        glVertex2f(0, 0)
-
-        glTexCoord2f(1, 0)
-        glVertex2f(self.window_width, 0)
-
-        glTexCoord2f(1, 1)
-        glVertex2f(self.window_width, self.window_height)
-
-        glTexCoord2f(0, 1)
-        glVertex2f(0, self.window_height)
-
+        glTexCoord2f(0, 0); glVertex2f(0, 0)
+        glTexCoord2f(1, 0); glVertex2f(self.window_width, 0)
+        glTexCoord2f(1, 1); glVertex2f(self.window_width, self.window_height)
+        glTexCoord2f(0, 1); glVertex2f(0, self.window_height)
         glEnd()
         glDisable(GL_TEXTURE_2D)
 
     def draw_bars(self, amplitudes, smooth_factor=0.1):
-        
+        # Clear
         glClearColor(0, 0, 0, 1)
         glClear(GL_COLOR_BUFFER_BIT)
 
         num_bars = len(amplitudes)
-        total_bar_width = self.window_width / num_bars
+        if num_bars < 1:
+            return
+
+        total_bar_width = self.window_width / float(num_bars)
         bar_width = total_bar_width * 0.8
         bar_spacing = total_bar_width * 0.2
 
+        # Setup orthographic projection
         glMatrixMode(GL_PROJECTION)
         glLoadIdentity()
         glOrtho(0, self.window_width, 0, self.window_height, -1, 1)
@@ -790,50 +806,90 @@ class EqualizerOpenGLThread(threading.Thread):
 
         self.draw_background()
 
-        for i, amplitude in enumerate(amplitudes):
-            # Bind the VBO
-            vbo = self.vbos[i]
-            glBindBuffer(GL_ARRAY_BUFFER, vbo)
+        # We do 3 draws per bar (green/yellow/red).
+        # For each color, we compute the geometry in CPU and upload to the same VBO.
+        if len(amplitudes) != len(self.previous_amplitudes) or len(amplitudes) != len(self.vbos):
+            # The user probably changed the bar count in mid-frame,
+            # so skip this draw call to avoid index errors.
+            return
 
-            # LERP between the previous amplitude and the new amplitude
+        for i, amplitude in enumerate(amplitudes):
+            # LERP amplitude
             smooth_factor = 0.1
-            interpolated_amplitude = self.previous_amplitudes[i] + smooth_factor * (amplitude - self.previous_amplitudes[i])
+            interpolated_amplitude = self.previous_amplitudes[i] + \
+                smooth_factor * (amplitude - self.previous_amplitudes[i])
             self.previous_amplitudes[i] = interpolated_amplitude
 
             x = i * total_bar_width + bar_spacing / 2
             y = 0
 
-            # Calculate the total height of the bar based on the amplitude
             total_height = interpolated_amplitude * self.window_height
 
-            # Calculate the heights of the three color sections based on the total height
             green_height = min(total_height, 0.5 * self.window_height)
             yellow_height = min(max(total_height - green_height, 0), 0.3 * self.window_height)
             red_height = max(total_height - green_height - yellow_height, 0)
 
-            # Draw the green rectangle
-            glColor3f(0, 1, 0)
-            glBegin(GL_QUADS)
-            glVertex2f(x, y)
-            glVertex2f(x + bar_width, y)
-            glVertex2f(x + bar_width, y + green_height)
-            glVertex2f(x, y + green_height)
-            glEnd()
+            # We'll draw each segment as 2 triangles => 6 vertices.
+            # The function below creates a float32 array of shape (6,2)
+            def rect_to_triangles(x1, y1, x2, y2):
+                """
+                Return 6 vertices (two triangles) for the rectangle [x1,y1] - [x2,y2].
+                Layout: (x1,y1),(x2,y1),(x2,y2), (x1,y1),(x2,y2),(x1,y2)
+                """
+                return np.array([
+                    [x1, y1],
+                    [x2, y1],
+                    [x2, y2],
+                    [x1, y1],
+                    [x2, y2],
+                    [x1, y2],
+                ], dtype=np.float32)
 
-            # Draw the yellow rectangle
-            glColor3f(1, 1, 0)
-            glBegin(GL_QUADS)
-            glVertex2f(x, y + green_height)
-            glVertex2f(x + bar_width, y + green_height)
-            glVertex2f(x + bar_width, y + green_height + yellow_height)
-            glVertex2f(x, y + green_height + yellow_height)
-            glEnd()
+            # 1) GREEN part
+            if green_height > 0:
+                x1, y1 = x, y
+                x2, y2 = x + bar_width, y + green_height
+                vertices = rect_to_triangles(x1, y1, x2, y2)
 
-            # Draw the red rectangle
-            glColor3f(1, 0, 0)
-            glBegin(GL_QUADS)
-            glVertex2f(x, y + green_height + yellow_height)
-            glVertex2f(x + bar_width, y + green_height + yellow_height)
-            glVertex2f(x + bar_width, y + green_height + yellow_height + red_height)
-            glVertex2f(x, y + green_height + yellow_height + red_height)
-            glEnd()
+                # Upload to VBO
+                glBindBuffer(GL_ARRAY_BUFFER, self.vbos[i])
+                glBufferSubData(GL_ARRAY_BUFFER, 0, vertices.nbytes, vertices)
+
+                # Old fixed-function calls
+                glColor3f(0, 1, 0)
+                glEnableClientState(GL_VERTEX_ARRAY)
+                glVertexPointer(2, GL_FLOAT, 0, ctypes.c_void_p(0))
+                glDrawArrays(GL_TRIANGLES, 0, 6)
+                glDisableClientState(GL_VERTEX_ARRAY)
+
+            # 2) YELLOW part
+            if yellow_height > 0:
+                y_start = y + green_height
+                x1, y1 = x, y_start
+                x2, y2 = x + bar_width, y_start + yellow_height
+                vertices = rect_to_triangles(x1, y1, x2, y2)
+
+                glBindBuffer(GL_ARRAY_BUFFER, self.vbos[i])
+                glBufferSubData(GL_ARRAY_BUFFER, 0, vertices.nbytes, vertices)
+
+                glColor3f(1, 1, 0)
+                glEnableClientState(GL_VERTEX_ARRAY)
+                glVertexPointer(2, GL_FLOAT, 0, ctypes.c_void_p(0))
+                glDrawArrays(GL_TRIANGLES, 0, 6)
+                glDisableClientState(GL_VERTEX_ARRAY)
+
+            # 3) RED part
+            if red_height > 0:
+                y_start = y + green_height + yellow_height
+                x1, y1 = x, y_start
+                x2, y2 = x + bar_width, y_start + red_height
+                vertices = rect_to_triangles(x1, y1, x2, y2)
+
+                glBindBuffer(GL_ARRAY_BUFFER, self.vbos[i])
+                glBufferSubData(GL_ARRAY_BUFFER, 0, vertices.nbytes, vertices)
+
+                glColor3f(1, 0, 0)
+                glEnableClientState(GL_VERTEX_ARRAY)
+                glVertexPointer(2, GL_FLOAT, 0, ctypes.c_void_p(0))
+                glDrawArrays(GL_TRIANGLES, 0, 6)
+                glDisableClientState(GL_VERTEX_ARRAY)
