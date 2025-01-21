@@ -9,6 +9,7 @@ from OpenGL.GL import *
 import numpy as np
 import scipy.fftpack as fft_pack
 from PIL import Image
+from PIL.Image import Transpose
 
 from thread.AudioBufferAccumulator import AudioBufferAccumulator
 
@@ -16,6 +17,9 @@ RATE = 44100
 N_FFT = 4096
 MIN_FREQ = 20
 MAX_FREQ = 20000
+
+FFT_LOGS = False
+PERF_LOGS = True
 
 
 def compute_fft(channel_samples: np.ndarray) -> np.ndarray:
@@ -69,9 +73,10 @@ def process_frequency_bands(args):
         band_amplitudes.append(band_amplitude)
 
     # LOG
-    print('LOGGING RAW AMPLITUDES')
-    for i, amp in enumerate(band_amplitudes):
-        print(f"Raw band {i} amplitude = {amp:.4f}")
+    if FFT_LOGS:
+        print('LOGGING RAW AMPLITUDES')
+        for i, amp in enumerate(band_amplitudes):
+            print(f"Raw band {i} amplitude = {amp:.4f}")
 
     return band_amplitudes
 
@@ -231,7 +236,8 @@ class EqualizerOpenGLThread(threading.Thread):
         import numpy.fft as fft_pack
 
         # LOG: Start
-        print("LOG: generate_bin_based_bands -> Start")
+        if FFT_LOGS:
+            print("LOG: generate_bin_based_bands -> Start")
 
         # 1) Compute positive frequencies for N_FFT
         freqs = fft_pack.fftfreq(N_FFT, d=1.0 / RATE)
@@ -243,10 +249,12 @@ class EqualizerOpenGLThread(threading.Thread):
         valid_indices = np.where(valid_mask)[0]
 
         # LOG: how many bins fall in [MIN_FREQ, MAX_FREQ]
-        print(f"LOG: valid_indices size in range [{MIN_FREQ}, {MAX_FREQ}] -> {len(valid_indices)}")
+        if FFT_LOGS:
+            print(f"LOG: valid_indices size in range [{MIN_FREQ}, {MAX_FREQ}] -> {len(valid_indices)}")
 
         if len(valid_indices) == 0:
-            print("LOG: No valid bins in the specified range. Returning fallback bands.")
+            if FFT_LOGS:
+                print("LOG: No valid bins in the specified range. Returning fallback bands.")
             return [(float(MIN_FREQ), float(MAX_FREQ))] * num_bands
 
         valid_freqs = positive_freqs[valid_indices]
@@ -258,8 +266,9 @@ class EqualizerOpenGLThread(threading.Thread):
         # 3) We initially create log-spaced edges, but we won't modify them in-place.
         initial_log_edges = np.linspace(min_log, max_log, num_bands + 1)
 
-        print(f"LOG: generate_bin_based_bands -> min_log={min_log:.4f}, max_log={max_log:.4f}")
-        print(f"LOG: initial_log_edges={initial_log_edges}")
+        if FFT_LOGS:
+            print(f"LOG: generate_bin_based_bands -> min_log={min_log:.4f}, max_log={max_log:.4f}")
+            print(f"LOG: initial_log_edges={initial_log_edges}")
 
         # We'll build the final list of frequency bands here:
         bands: list[tuple[float, float]] = []
@@ -277,7 +286,8 @@ class EqualizerOpenGLThread(threading.Thread):
             # LOG: check ascending
             if band_low_freq > band_high_freq:
                 # Safety check: if for some reason they got reversed, swap them
-                print(f"LOG WARNING: Reversed edges found! Swapping: {band_low_freq}, {band_high_freq}")
+                if FFT_LOGS:
+                    print(f"LOG WARNING: Reversed edges found! Swapping: {band_low_freq}, {band_high_freq}")
                 band_low_freq, band_high_freq = band_high_freq, band_low_freq
 
             # Identify which bins fall in [band_low_freq, band_high_freq)
@@ -285,8 +295,9 @@ class EqualizerOpenGLThread(threading.Thread):
             band_indices = np.where(band_mask)[0]
 
             # LOG
-            print(f"LOG: Checking band #{len(bands)} from {band_low_freq:.2f} Hz to {band_high_freq:.2f} Hz")
-            print(f"LOG:   -> Found {len(band_indices)} bins in that band")
+            if FFT_LOGS:
+                print(f"LOG: Checking band #{len(bands)} from {band_low_freq:.2f} Hz to {band_high_freq:.2f} Hz")
+                print(f"LOG:   -> Found {len(band_indices)} bins in that band")
 
             if len(band_indices) == 0:
                 # Merge this empty band with subsequent edges, if possible
@@ -303,8 +314,8 @@ class EqualizerOpenGLThread(threading.Thread):
 
                     if len(band_indices2) > 0:
                         # We found a bigger interval that is not empty
-                        print(
-                            f"LOG:   -> Merging empty band up to edge {merge_index}, freq={candidate_high_freq:.2f} Hz")
+                        if FFT_LOGS:
+                            print(f"LOG:   -> Merging empty band up to edge {merge_index}, freq={candidate_high_freq:.2f} Hz")
                         high_edge = candidate_high_edge
                         band_high_freq = candidate_high_freq
                         merged = True
@@ -315,7 +326,8 @@ class EqualizerOpenGLThread(threading.Thread):
 
                 # Re-check if still reversed
                 if band_low_freq > band_high_freq:
-                    print(f"LOG WARNING: After merging, reversed edges again! Swapping.")
+                    if FFT_LOGS:
+                        print(f"LOG WARNING: After merging, reversed edges again! Swapping.")
                     band_low_freq, band_high_freq = band_high_freq, band_low_freq
 
             # Now we finalize this band
@@ -323,12 +335,13 @@ class EqualizerOpenGLThread(threading.Thread):
             bands.append((band_low_freq, band_high_freq))
             edge_idx += 1
 
-        print(f"[generate_bin_based_bands] Requested: {num_bands}, Final: {len(bands)}")
-        for idx, (lf, hf) in enumerate(bands):
-            print(f"  BAND #{idx}: {lf:.2f} -> {hf:.2f}")
+        if FFT_LOGS:
+            print(f"[generate_bin_based_bands] Requested: {num_bands}, Final: {len(bands)}")
+            for idx, (lf, hf) in enumerate(bands):
+                print(f"  BAND #{idx}: {lf:.2f} -> {hf:.2f}")
 
-        # LOG: End
-        print("LOG: generate_bin_based_bands -> End")
+            # LOG: End
+            print("LOG: generate_bin_based_bands -> End")
         return bands
 
     def apply_frequency_shaping(self,
@@ -344,7 +357,8 @@ class EqualizerOpenGLThread(threading.Thread):
                 factor = 1.0 + np.log10(center_freq / 4000.0 + 1e-12)
                 new_val = amp * factor
                 # LOG a scopo diagnostico
-                print(f"LOG: apply_frequency_shaping -> Band {i} (center={center_freq:.2f}Hz), old={amp:.4f}, new={new_val:.4f}")
+                if FFT_LOGS:
+                    print(f"LOG: apply_frequency_shaping -> Band {i} (center={center_freq:.2f}Hz), old={amp:.4f}, new={new_val:.4f}")
                 shaped_amplitudes.append(new_val)
             else:
                 shaped_amplitudes.append(amp)
@@ -374,7 +388,8 @@ class EqualizerOpenGLThread(threading.Thread):
             list[float]: normalized amplitude for each band in [0..1].
         """
         # LOG dimensioni
-        print(f"LOG: create_equalizer -> audio_data.shape={audio_data.shape}, freq_bands={len(frequency_bands)}")
+        if FFT_LOGS:
+            print(f"LOG: create_equalizer -> audio_data.shape={audio_data.shape}, freq_bands={len(frequency_bands)}")
 
         # Transpose so shape = (channels, N_FFT)
         audio_samples: np.ndarray = audio_data.T
@@ -471,7 +486,8 @@ class EqualizerOpenGLThread(threading.Thread):
 
                 # Calcolo RMS come "volume"
                 volume = np.sqrt(np.mean(channel_samples ** 2))
-                print(f"LOG: Channel {ch_idx} volume (RMS) = {volume:.4f}")
+                if FFT_LOGS:
+                    print(f"LOG: Channel {ch_idx} volume (RMS) = {volume:.4f}")
 
                 band_amplitudes = []
                 for i, (low_freq, high_freq) in enumerate(frequency_bands):
@@ -479,7 +495,8 @@ class EqualizerOpenGLThread(threading.Thread):
                     amp = np.mean(fft_values[band_mask]) if np.any(band_mask) else 0
                     amp *= volume
                     # LOG: amplitude prima della shaping
-                    print(f"LOG:   Ch{ch_idx} Band {i} -> freq=[{low_freq:.2f},{high_freq:.2f}], bins={np.count_nonzero(band_mask)}, amp={amp:.4f}")
+                    if FFT_LOGS:
+                        print(f"LOG:   Ch{ch_idx} Band {i} -> freq=[{low_freq:.2f},{high_freq:.2f}], bins={np.count_nonzero(band_mask)}, amp={amp:.4f}")
                     band_amplitudes.append(amp)
 
                 equalizer_data.append(band_amplitudes)
@@ -487,19 +504,22 @@ class EqualizerOpenGLThread(threading.Thread):
         # 3) Merge canali (media)
         avg_band_amplitudes = np.mean(equalizer_data, axis=0)
 
-        print(f"LOG: AVERAGE BANDS AMPLITUDES (Before threshold) = {[f'{v:.4f}' for v in avg_band_amplitudes]}")
+        if FFT_LOGS:
+            print(f"LOG: AVERAGE BANDS AMPLITUDES (Before threshold) = {[f'{v:.4f}' for v in avg_band_amplitudes]}")
 
         # 4) Applica soglia di rumore lineare
         filtered_amplitudes = [
             amp if amp >= noise_threshold else 0
             for amp in avg_band_amplitudes
         ]
-        print(f"LOG: After Noise Threshold {noise_threshold} -> {filtered_amplitudes}")
+        if FFT_LOGS:
+            print(f"LOG: After Noise Threshold {noise_threshold} -> {filtered_amplitudes}")
 
         # 5) (NOVITÀ) Applichiamo frequency shaping sulle ampiezze lineari
         #    per "pompare" alcune aree, ad esempio le alte frequenze.
         shaped_amplitudes = self.apply_frequency_shaping(filtered_amplitudes, frequency_bands)
-        print(f"LOG: After freq shaping -> {shaped_amplitudes}")
+        if FFT_LOGS:
+            print(f"LOG: After freq shaping -> {shaped_amplitudes}")
 
         # 6) Convertiamo in dB
         epsilon = 1e-12
@@ -512,7 +532,8 @@ class EqualizerOpenGLThread(threading.Thread):
         max_db = max(dB_values)
         db_range = max_db - min_db
 
-        print(f"LOG: dB range -> min={min_db:.2f}, max={max_db:.2f}, range={db_range:.2f}")
+        if FFT_LOGS:
+            print(f"LOG: dB range -> min={min_db:.2f}, max={max_db:.2f}, range={db_range:.2f}")
 
         # 7) Normalizzazione [0..1]
         if db_range < 1e-9:
@@ -520,7 +541,8 @@ class EqualizerOpenGLThread(threading.Thread):
         else:
             normalized_amplitudes = [(db - min_db) / db_range for db in dB_values]
 
-        print(f"LOG: normalized final amps -> {normalized_amplitudes}")
+        if FFT_LOGS:
+            print(f"LOG: normalized final amps -> {normalized_amplitudes}")
         return normalized_amplitudes
     
     def init_vbos(self):
@@ -639,6 +661,7 @@ class EqualizerOpenGLThread(threading.Thread):
         # MAIN LOOP
         # -------------------------
         while not glfw.window_should_close(window) and not self.stop_event.is_set():
+            frame_start_time = time.time()
             # Process messages from the control queue
             while not self._control_queue.empty():
                 message = self._control_queue.get(block=False)
@@ -661,13 +684,16 @@ class EqualizerOpenGLThread(threading.Thread):
                 if fft_window.size > 0:
                     # shape: (N_FFT, channels)
                     print('LOG: Start log')
+                    t0 = time.time()
                     amplitudes = self.create_equalizer(
                         audio_data=fft_window,
                         frequency_bands=self.frequency_bands,
                         noise_threshold=self._noise_threshold,
                         channels=self._channels
                     )
-                    print('LOG: Finish log')
+                    t1 = time.time()
+                    if PERF_LOGS:
+                        print(f"PERF LOG: FFT took {(t1 - t0) * 1000:.2f} ms")
                     self.latest_amplitudes = amplitudes
                 self.last_fft_time = current_time
 
@@ -681,6 +707,13 @@ class EqualizerOpenGLThread(threading.Thread):
             previous_time = current_time
             glfw.swap_buffers(window)
             glfw.poll_events()
+
+            if PERF_LOGS:
+                frame_end_time = time.time()
+                frame_ms = (frame_end_time - frame_start_time) * 1000.0
+                print(f"PERF LOG: FrameTime = {frame_ms:.2f}ms (FPS ~ {1000.0 / frame_ms:.1f})")
+
+            print('LOG: Finish log')
 
         # Cleanup
         glfw.destroy_window(window)
@@ -702,7 +735,7 @@ class EqualizerOpenGLThread(threading.Thread):
         self._background_texture = self.load_texture()
 
     def load_texture(self):
-        im = self._bg_image.transpose(Image.FLIP_TOP_BOTTOM)
+        im = self._bg_image.transpose(Transpose.FLIP_TOP_BOTTOM)
         im_data = im.convert('RGBA').tobytes()
 
         width, height = im.size
