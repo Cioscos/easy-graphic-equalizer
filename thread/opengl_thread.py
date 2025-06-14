@@ -3,6 +3,7 @@ import math
 import time
 from concurrent.futures import ProcessPoolExecutor
 from typing import Optional, Callable, List, Tuple
+from collections import deque
 
 import glfw
 from OpenGL.GL import *
@@ -192,12 +193,24 @@ class EqualizerOpenGLThread(threading.Thread):
                                                         overlap_size=N_FFT // 2,
                                                         channels=self._channels)
 
-        # Throttle parameters - più veloce per migliore reattività
-        self.fft_interval = 0.008  # ~125 FPS per l'audio
+        # --- MIGLIORAMENTI PER FLUIDITÀ ---
+        # 1. Buffer circolare per interpolazione temporale
+        self.amplitude_history_size = 5  # Numero di campioni storici da mantenere
+        self.amplitude_history = deque(maxlen=self.amplitude_history_size)
+
+        # 2. Timing più preciso - SARÀ IMPOSTATO DINAMICAMENTE
+        self.fft_interval = None  # Verrà calcolato in base al refresh rate
         self.last_fft_time = 0.0
 
-        # Keep track of the latest amplitudes we computed
-        self.latest_amplitudes = [0.0] * self._n_bands
+        # 3. Target amplitudes per interpolazione più fluida
+        self.target_amplitudes = [0.0] * self._n_bands
+        self.current_amplitudes = [0.0] * self._n_bands
+
+        # 4. Fattore di smoothing adattivo
+        self.base_smooth_factor = 0.15  # Valore base per 60Hz
+        self.smooth_acceleration = 2.0  # Accelerazione per cambiamenti rapidi
+
+        # Questi verranno aggiustati in base al refresh rate nel metodo run()
 
     def _calculate_workers(self, bands: int) -> int:
         """
@@ -378,7 +391,9 @@ class EqualizerOpenGLThread(threading.Thread):
             self._n_bands = message["value"]
             self.frequency_bands = self.generate_frequency_bands(message["value"])
             self.previous_amplitudes = [0] * len(self.frequency_bands)
-            self.latest_amplitudes = [0.0] * self._n_bands
+            self.target_amplitudes = [0.0] * self._n_bands
+            self.current_amplitudes = [0.0] * self._n_bands
+            self.amplitude_history.clear()
             # Clear and reinitialize VBOs
             if self.vbos:
                 glDeleteBuffers(len(self.vbos), self.vbos)
@@ -416,6 +431,55 @@ class EqualizerOpenGLThread(threading.Thread):
                     self.executor = None
                     self.executor = ProcessPoolExecutor(max_workers=self._workers)
 
+    def smooth_amplitudes(self, new_amplitudes: list[float], delta_time: float) -> list[float]:
+        """
+        Applica uno smoothing adattivo alle ampiezze per maggiore fluidità.
+
+        Args:
+            new_amplitudes: Le nuove ampiezze calcolate dall'FFT
+            delta_time: Tempo trascorso dall'ultimo frame
+
+        Returns:
+            list[float]: Ampiezze interpolate in modo fluido
+        """
+        # Aggiungi le nuove ampiezze alla storia
+        self.amplitude_history.append(new_amplitudes)
+
+        # Se non abbiamo abbastanza storia, usa solo l'ultimo valore
+        if len(self.amplitude_history) < 2:
+            return new_amplitudes
+
+        smoothed = []
+        for i in range(len(new_amplitudes)):
+            # Calcola la media mobile delle ultime ampiezze
+            historical_values = [hist[i] for hist in self.amplitude_history]
+            avg_amplitude = np.mean(historical_values)
+
+            # Calcola la velocità di cambiamento
+            if len(self.amplitude_history) >= 2:
+                velocity = abs(self.amplitude_history[-1][i] - self.amplitude_history[-2][i])
+            else:
+                velocity = 0
+
+            # Adatta il fattore di smoothing basato sulla velocità
+            # Più veloce il cambiamento, più reattivo dovrebbe essere
+            adaptive_smooth = self.base_smooth_factor + (velocity * self.smooth_acceleration)
+            adaptive_smooth = min(adaptive_smooth, 0.8)  # Limita il massimo
+
+            # Interpolazione esponenziale con fattore adattivo
+            # Normalizza per il frame rate - monitor più veloci = smoothing più veloce
+            frame_rate_factor = self.frame_rate / 60.0  # Normalizza rispetto a 60Hz
+            time_factor = 1 - math.exp(-delta_time * adaptive_smooth * 60 * frame_rate_factor)
+
+            # Interpola tra il valore corrente e il target
+            self.current_amplitudes[i] += (new_amplitudes[i] - self.current_amplitudes[i]) * time_factor
+
+            # Aggiungi una piccola componente della media mobile per stabilità
+            smoothed_value = self.current_amplitudes[i] * 0.9 + avg_amplitude * 0.1
+            smoothed.append(smoothed_value)
+
+        return smoothed
+
     def run(self):
         """
         Main loop del thread OpenGL.
@@ -443,6 +507,26 @@ class EqualizerOpenGLThread(threading.Thread):
         self.window_height = video_mode.size.height
         self.frame_rate = video_mode.refresh_rate
 
+        # Calcola dinamicamente l'intervallo FFT basato sul refresh rate del monitor
+        # Per monitor ad alto refresh rate (>100Hz), aggiorna FFT ogni 2 frame
+        # Per monitor standard (60-100Hz), aggiorna FFT ogni frame
+        if self.frame_rate > 100:
+            self.fft_interval = 2.0 / self.frame_rate  # Ogni 2 frame
+        else:
+            self.fft_interval = 1.0 / self.frame_rate  # Ogni frame
+
+        # Adatta il fattore di smoothing base al refresh rate
+        # Monitor più veloci necessitano di smoothing più aggressivo per mantenere fluidità
+        if self.frame_rate >= 144:
+            self.base_smooth_factor = 0.25  # Più reattivo per high refresh
+        elif self.frame_rate >= 120:
+            self.base_smooth_factor = 0.20
+        else:
+            self.base_smooth_factor = 0.15  # Default per 60Hz
+
+        print(
+            f"Monitor refresh rate: {self.frame_rate}Hz, FFT interval: {self.fft_interval * 1000:.2f}ms, Smooth factor: {self.base_smooth_factor}")
+
         window = glfw.create_window(self.window_width, self.window_height, "Audio Visualizer", selected_monitor, None)
         if not window:
             glfw.terminate()
@@ -453,6 +537,9 @@ class EqualizerOpenGLThread(threading.Thread):
             self.stop_event.clear()
 
         glfw.make_context_current(window)
+
+        # Enable VSync per sincronizzazione con il refresh del monitor
+        glfw.swap_interval(1)
 
         # Enable blending
         glEnable(GL_BLEND)
@@ -472,35 +559,46 @@ class EqualizerOpenGLThread(threading.Thread):
         frame_duration = 1 / self.frame_rate
         previous_time = time.time()
 
+        # Timing più preciso
+        last_frame_time = glfw.get_time()
+
         # -------------------------
         # MAIN LOOP
         # -------------------------
         while not glfw.window_should_close(window) and not self.stop_event.is_set():
-            frame_start_time = time.time()
+            # Timing preciso usando GLFW
+            current_frame_time = glfw.get_time()
+            frame_delta = current_frame_time - last_frame_time
+            last_frame_time = current_frame_time
 
             # Process messages from the control queue
             while not self._control_queue.empty():
                 message = self._control_queue.get(block=False)
                 self.process_control_message(message)
 
+            # 1) Pull audio data in modo più controllato
+            # Per monitor ad alto refresh rate, processa più chunk per frame
+            audio_chunks_processed = 0
+            max_chunks_per_frame = max(3, int(self.frame_rate / 60))  # Scala con il refresh rate
+
+            while not self._audio_queue.empty() and audio_chunks_processed < max_chunks_per_frame:
+                try:
+                    audio_buffer = self._audio_queue.get_nowait()
+                    self.audio_accumulator.add_samples(audio_buffer)
+                    audio_chunks_processed += 1
+                except:
+                    break
+
+            # 2) Calcola FFT a intervalli regolari
             current_time = time.time()
-            elapsed_time = current_time - previous_time
-
-            # 1) Pull all available chunks from the queue
-            while not self._audio_queue.empty():
-                audio_buffer = self._audio_queue.get(block=False)
-                self.audio_accumulator.add_samples(audio_buffer)
-
-            # 2) Throttle the FFT with reduced interval for better responsiveness
             if (current_time - self.last_fft_time) >= self.fft_interval:
-                # Attempt to retrieve enough samples for a new FFT
                 fft_window = self.audio_accumulator.get_window_for_fft()
                 if fft_window.size > 0:
                     if GENERAL_LOG:
                         print('LOG: Start FFT computation')
 
                     t0 = time.time()
-                    amplitudes = self.create_equalizer(
+                    raw_amplitudes = self.create_equalizer(
                         audio_data=fft_window,
                         frequency_bands=self.frequency_bands,
                         noise_threshold=self._noise_threshold,
@@ -511,26 +609,23 @@ class EqualizerOpenGLThread(threading.Thread):
                     if PERF_LOGS:
                         print(f"PERF LOG: FFT took {(t1 - t0) * 1000:.2f} ms")
 
-                    self.latest_amplitudes = amplitudes
+                    # Aggiorna i target con smoothing
+                    self.target_amplitudes = raw_amplitudes
 
                 self.last_fft_time = current_time
 
-            # 3) Exponential smoothing (più veloce per maggiore reattività)
-            smooth_factor = 1 - math.exp(-elapsed_time / (frame_duration * 2))
+            # 3) Applica smoothing avanzato
+            smoothed_amplitudes = self.smooth_amplitudes(self.target_amplitudes, frame_delta)
 
-            # 4) Draw bars, always using self.latest_amplitudes
-            self.draw_bars(self.latest_amplitudes, smooth_factor)
+            # 4) Draw bars con valori smoothed
+            self.draw_bars(smoothed_amplitudes, frame_delta)
 
-            previous_time = current_time
             glfw.swap_buffers(window)
             glfw.poll_events()
 
-            if PERF_LOGS:
-                frame_end_time = time.time()
-                frame_ms = (frame_end_time - frame_start_time) * 1000.0
-                if frame_ms > 0:
-                    fps = 1000.0 / frame_ms
-                    print(f"PERF LOG: FrameTime = {frame_ms:.2f}ms (FPS ~ {fps:.1f})")
+            if PERF_LOGS and frame_delta > 0:
+                fps = 1.0 / frame_delta
+                print(f"PERF LOG: FrameTime = {frame_delta * 1000:.2f}ms (FPS ~ {fps:.1f})")
 
         # Cleanup
         glfw.destroy_window(window)
@@ -609,13 +704,13 @@ class EqualizerOpenGLThread(threading.Thread):
         glEnd()
         glDisable(GL_TEXTURE_2D)
 
-    def draw_bars(self, amplitudes, smooth_factor=0.1):
+    def draw_bars(self, amplitudes: list[float], delta_time: float):
         """
-        Disegna le barre dell'equalizzatore.
+        Disegna le barre dell'equalizzatore con interpolazione più fluida.
 
         Args:
-            amplitudes (list): Lista delle ampiezze normalizzate
-            smooth_factor (float): Fattore di smoothing
+            amplitudes (list): Lista delle ampiezze già smoothed
+            delta_time (float): Tempo trascorso dall'ultimo frame
         """
         # Clear
         glClearColor(0, 0, 0, 1)
@@ -643,9 +738,8 @@ class EqualizerOpenGLThread(threading.Thread):
             return
 
         for i, amplitude in enumerate(amplitudes):
-            # LERP amplitude con smooth_factor più veloce
-            interpolated_amplitude = self.previous_amplitudes[i] + \
-                                     smooth_factor * (amplitude - self.previous_amplitudes[i])
+            # Usa direttamente le ampiezze già smoothed
+            interpolated_amplitude = amplitude
             self.previous_amplitudes[i] = interpolated_amplitude
 
             x = i * total_bar_width + bar_spacing / 2
