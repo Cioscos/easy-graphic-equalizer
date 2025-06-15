@@ -207,7 +207,7 @@ class EqualizerOpenGLThread(threading.Thread):
         self.current_amplitudes = [0.0] * self._n_bands
 
         # 4. Fattore di smoothing adattivo
-        self.base_smooth_factor = 0.15  # Valore base per 60Hz
+        self.base_smooth_factor = 0.5  # Valore base per 60Hz
         self.smooth_acceleration = 2.0  # Accelerazione per cambiamenti rapidi
 
         # Questi verranno aggiustati in base al refresh rate nel metodo run()
@@ -483,34 +483,31 @@ class EqualizerOpenGLThread(threading.Thread):
     #     return smoothed
 
     def smooth_amplitudes(self, new_amplitudes: list[float], delta_time: float) -> list[float]:
-        # Ensure delta_time is positive and reasonable
+        """
+        Applica uno smoothing adattivo alle ampiezze per maggiore fluidità.
+        """
         delta_time = max(delta_time, 1e-6)  # Prevent negative or zero delta_time
 
-        # Aggiungi le nuove ampiezze alla storia
-        self.amplitude_history.append(new_amplitudes)
-
-        if len(self.amplitude_history) < 2:
-            return new_amplitudes
-
         smoothed = []
+        frame_rate_factor = self.frame_rate / 60.0
+
         for i in range(len(new_amplitudes)):
-            historical_values = [hist[i] for hist in self.amplitude_history]
-            avg_amplitude = np.mean(historical_values)
+            if i >= len(self.current_amplitudes):
+                self.current_amplitudes.append(new_amplitudes[i])
 
-            if len(self.amplitude_history) >= 2:
-                velocity = abs(self.amplitude_history[-1][i] - self.amplitude_history[-2][i])
-            else:
-                velocity = 0
+            velocity = abs(new_amplitudes[i] - self.current_amplitudes[i])
 
-            adaptive_smooth = self.base_smooth_factor + (velocity * self.smooth_acceleration)
+            adaptive_smooth = self.base_smooth_factor + (velocity * 0.5)  # Use dynamic base
             adaptive_smooth = min(adaptive_smooth, 0.8)
 
-            frame_rate_factor = self.frame_rate / 60.0
             time_factor = 1 - math.exp(-delta_time * adaptive_smooth * 60 * frame_rate_factor)
 
-            self.current_amplitudes[i] += (new_amplitudes[i] - self.current_amplitudes[i]) * time_factor
-            smoothed_value = self.current_amplitudes[i] * 0.9 + avg_amplitude * 0.1
-            smoothed.append(smoothed_value)
+            max_change = 0.1  # Limit amplitude change per frame
+            delta_amplitude = new_amplitudes[i] - self.current_amplitudes[i]
+            delta_amplitude = max(min(delta_amplitude, max_change), -max_change)
+
+            self.current_amplitudes[i] += delta_amplitude * time_factor
+            smoothed.append(self.current_amplitudes[i])
 
         return smoothed
 
@@ -541,22 +538,25 @@ class EqualizerOpenGLThread(threading.Thread):
         self.window_height = video_mode.size.height
         self.frame_rate = video_mode.refresh_rate
 
-        # Calcola dinamicamente l'intervallo FFT basato sul refresh rate del monitor
-        # Per monitor ad alto refresh rate (>100Hz), aggiorna FFT ogni 2 frame
-        # Per monitor standard (60-100Hz), aggiorna FFT ogni frame
+        # Calcola l'intervallo FFT basato sul refresh rate e la velocità del buffer audio
+        audio_update_interval = (N_FFT // 2) / 44100.0  # e.g., 1024 / 44100 ≈ 0.0232 s
+        frame_time = 1.0 / self.frame_rate  # e.g., 1/165 ≈ 0.00606 s
+
+        # Usa il più grande tra l'intervallo audio e 2 frame per monitor ad alto refresh
         if self.frame_rate > 100:
-            self.fft_interval = 2.0 / self.frame_rate  # Ogni 2 frame
+            self.fft_interval = max(audio_update_interval, 2.0 * frame_time)  # Almeno 2 frame
         else:
-            self.fft_interval = 1.0 / self.frame_rate  # Ogni frame
+            self.fft_interval = max(audio_update_interval, frame_time)  # Almeno 1 frame
+
+        print(f"FFT interval set to {self.fft_interval * 1000:.2f} ms (~{1 / self.fft_interval:.1f} Hz)")
 
         # Adatta il fattore di smoothing base al refresh rate
-        # Monitor più veloci necessitano di smoothing più aggressivo per mantenere fluidità
         if self.frame_rate >= 144:
-            self.base_smooth_factor = 0.25  # Più reattivo per high refresh
+            self.base_smooth_factor = 0.35  # Smooth but responsive for high refresh
         elif self.frame_rate >= 120:
-            self.base_smooth_factor = 0.20
+            self.base_smooth_factor = 0.30
         else:
-            self.base_smooth_factor = 0.15  # Default per 60Hz
+            self.base_smooth_factor = 0.25  # Default for 60Hz
 
         print(
             f"Monitor refresh rate: {self.frame_rate}Hz, FFT interval: {self.fft_interval * 1000:.2f}ms, Smooth factor: {self.base_smooth_factor}")
