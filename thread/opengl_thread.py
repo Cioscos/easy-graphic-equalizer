@@ -233,21 +233,23 @@ class EqualizerOpenGLThread(threading.Thread):
         else:
             return 5
 
-    def generate_frequency_bands(self, num_bands: int) -> List[Tuple[float, float]]:
-        """
-        Genera le bande di frequenza in scala logaritmica (come in Tkinter).
+    def generate_frequency_bands(self, num_bands: int):
+        bin_width = RATE / N_FFT  # e.g., 21.53 Hz
+        bands = []
+        current_freq = MIN_FREQ
 
-        Args:
-            num_bands (int): Numero di bande desiderate
-
-        Returns:
-            list[tuple[float, float]]: Lista di tuple (freq_min, freq_max)
-        """
-        min_log_freq = np.log10(MIN_FREQ)
-        max_log_freq = np.log10(MAX_FREQ)
-
-        log_freqs = np.logspace(min_log_freq, max_log_freq, num=num_bands + 1)
-        bands = [(log_freqs[i], log_freqs[i + 1]) for i in range(num_bands)]
+        for _ in range(num_bands):
+            # Calculate next frequency with logarithmic scaling
+            next_freq = current_freq * (10 ** (np.log10(MAX_FREQ / MIN_FREQ) / num_bands))
+            # Ensure band is at least as wide as one bin
+            if next_freq - current_freq < bin_width:
+                next_freq = current_freq + bin_width
+            if next_freq > MAX_FREQ:
+                next_freq = MAX_FREQ
+            bands.append((current_freq, next_freq))
+            current_freq = next_freq
+            if current_freq >= MAX_FREQ:
+                break
 
         return bands
 
