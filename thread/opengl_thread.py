@@ -2,7 +2,7 @@ import threading
 import math
 import time
 from concurrent.futures import ProcessPoolExecutor
-from typing import Optional, Callable, List, Tuple
+from typing import Optional, Callable
 from collections import deque
 
 import glfw
@@ -15,13 +15,13 @@ from PIL.Image import Transpose
 from thread.AudioBufferAccumulator import AudioBufferAccumulator
 
 RATE = 44100
-N_FFT = 2048
+N_FFT = 4096
 MIN_FREQ = 20
 MAX_FREQ = 20000
 
-GENERAL_LOG = True
-FFT_LOGS = True
-PERF_LOGS = True
+GENERAL_LOG = False
+FFT_LOGS = False
+PERF_LOGS = False
 
 
 def compute_fft(channel_samples: np.ndarray) -> np.ndarray:
@@ -234,22 +234,50 @@ class EqualizerOpenGLThread(threading.Thread):
             return 5
 
     def generate_frequency_bands(self, num_bands: int):
+        """
+        Genera bande di frequenza in scala logaritmica, garantendo esattamente num_bands
+        e bande distinte anche a basse frequenze.
+
+        Args:
+            num_bands (int): Numero di bande desiderate
+            min_freq (float): Frequenza minima (default 20 Hz)
+            max_freq (float): Frequenza massima (default 20000 Hz)
+            rate (int): Frequenza di campionamento (default 44100 Hz)
+            n_fft (int): Dimensione FFT (default 2048)
+
+        Returns:
+            list[tuple[float, float]]: Lista di tuple (freq_min, freq_max)
+        """
         bin_width = RATE / N_FFT  # e.g., 21.53 Hz
         bands = []
         current_freq = MIN_FREQ
 
-        for _ in range(num_bands):
-            # Calculate next frequency with logarithmic scaling
-            next_freq = current_freq * (10 ** (np.log10(MAX_FREQ / MIN_FREQ) / num_bands))
-            # Ensure band is at least as wide as one bin
-            if next_freq - current_freq < bin_width:
-                next_freq = current_freq + bin_width
-            if next_freq > MAX_FREQ:
-                next_freq = MAX_FREQ
-            bands.append((current_freq, next_freq))
-            current_freq = next_freq
+        # Calcola il fattore di crescita logaritmico per distribuire le bande
+        log_growth = (np.log10(MAX_FREQ / MIN_FREQ)) / (num_bands - 1) if num_bands > 1 else 0
+        target_freqs = [MIN_FREQ * (10 ** (i * log_growth)) for i in range(num_bands)]
+        target_freqs[-1] = MAX_FREQ  # Assicura che l'ultima banda raggiunga max_freq
+
+        for i in range(num_bands - 1):
+            low_freq = current_freq
+            # Usa il target logaritmico come guida, ma assicura larghezza minima
+            high_freq = max(target_freqs[i + 1], low_freq + bin_width)
+
+            # Limita a max_freq
+            if high_freq > MAX_FREQ:
+                high_freq = MAX_FREQ
+
+            bands.append((low_freq, high_freq))
+            current_freq = high_freq  # La prossima banda inizia dove finisce questa
+
+            # Se abbiamo raggiunto max_freq, riempi le bande rimanenti
             if current_freq >= MAX_FREQ:
+                for j in range(i + 1, num_bands - 1):
+                    bands.append((MAX_FREQ, MAX_FREQ))  # Bande vuote a max_freq
                 break
+
+        # Aggiungi l'ultima banda
+        if len(bands) < num_bands:
+            bands.append((current_freq, MAX_FREQ))
 
         return bands
 
