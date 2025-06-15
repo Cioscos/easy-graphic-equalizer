@@ -15,13 +15,13 @@ from PIL.Image import Transpose
 from thread.AudioBufferAccumulator import AudioBufferAccumulator
 
 RATE = 44100
-N_FFT = 8192  # Allineato con Tkinter thread
+N_FFT = 2048
 MIN_FREQ = 20
 MAX_FREQ = 20000
 
-GENERAL_LOG = False
-FFT_LOGS = False
-PERF_LOGS = False
+GENERAL_LOG = True
+FFT_LOGS = True
+PERF_LOGS = True
 
 
 def compute_fft(channel_samples: np.ndarray) -> np.ndarray:
@@ -431,50 +431,82 @@ class EqualizerOpenGLThread(threading.Thread):
                     self.executor = None
                     self.executor = ProcessPoolExecutor(max_workers=self._workers)
 
+    # def smooth_amplitudes(self, new_amplitudes: list[float], delta_time: float) -> list[float]:
+    #     """
+    #     Applica uno smoothing adattivo alle ampiezze per maggiore fluidità.
+    #
+    #     Args:
+    #         new_amplitudes: Le nuove ampiezze calcolate dall'FFT
+    #         delta_time: Tempo trascorso dall'ultimo frame
+    #
+    #     Returns:
+    #         list[float]: Ampiezze interpolate in modo fluido
+    #     """
+    #     # Aggiungi le nuove ampiezze alla storia
+    #     self.amplitude_history.append(new_amplitudes)
+    #
+    #     # Se non abbiamo abbastanza storia, usa solo l'ultimo valore
+    #     if len(self.amplitude_history) < 2:
+    #         return new_amplitudes
+    #
+    #     smoothed = []
+    #     for i in range(len(new_amplitudes)):
+    #         # Calcola la media mobile delle ultime ampiezze
+    #         historical_values = [hist[i] for hist in self.amplitude_history]
+    #         avg_amplitude = np.mean(historical_values)
+    #
+    #         # Calcola la velocità di cambiamento
+    #         if len(self.amplitude_history) >= 2:
+    #             velocity = abs(self.amplitude_history[-1][i] - self.amplitude_history[-2][i])
+    #         else:
+    #             velocity = 0
+    #
+    #         # Adatta il fattore di smoothing basato sulla velocità
+    #         # Più veloce il cambiamento, più reattivo dovrebbe essere
+    #         adaptive_smooth = self.base_smooth_factor + (velocity * self.smooth_acceleration)
+    #         adaptive_smooth = min(adaptive_smooth, 0.8)  # Limita il massimo
+    #
+    #         # Interpolazione esponenziale con fattore adattivo
+    #         # Normalizza per il frame rate - monitor più veloci = smoothing più veloce
+    #         frame_rate_factor = self.frame_rate / 60.0  # Normalizza rispetto a 60Hz
+    #         time_factor = 1 - math.exp(-delta_time * adaptive_smooth * 60 * frame_rate_factor)
+    #
+    #         # Interpola tra il valore corrente e il target
+    #         self.current_amplitudes[i] += (new_amplitudes[i] - self.current_amplitudes[i]) * time_factor
+    #
+    #         # Aggiungi una piccola componente della media mobile per stabilità
+    #         smoothed_value = self.current_amplitudes[i] * 0.9 + avg_amplitude * 0.1
+    #         smoothed.append(smoothed_value)
+    #
+    #     return smoothed
+
     def smooth_amplitudes(self, new_amplitudes: list[float], delta_time: float) -> list[float]:
-        """
-        Applica uno smoothing adattivo alle ampiezze per maggiore fluidità.
+        # Ensure delta_time is positive and reasonable
+        delta_time = max(delta_time, 1e-6)  # Prevent negative or zero delta_time
 
-        Args:
-            new_amplitudes: Le nuove ampiezze calcolate dall'FFT
-            delta_time: Tempo trascorso dall'ultimo frame
-
-        Returns:
-            list[float]: Ampiezze interpolate in modo fluido
-        """
         # Aggiungi le nuove ampiezze alla storia
         self.amplitude_history.append(new_amplitudes)
 
-        # Se non abbiamo abbastanza storia, usa solo l'ultimo valore
         if len(self.amplitude_history) < 2:
             return new_amplitudes
 
         smoothed = []
         for i in range(len(new_amplitudes)):
-            # Calcola la media mobile delle ultime ampiezze
             historical_values = [hist[i] for hist in self.amplitude_history]
             avg_amplitude = np.mean(historical_values)
 
-            # Calcola la velocità di cambiamento
             if len(self.amplitude_history) >= 2:
                 velocity = abs(self.amplitude_history[-1][i] - self.amplitude_history[-2][i])
             else:
                 velocity = 0
 
-            # Adatta il fattore di smoothing basato sulla velocità
-            # Più veloce il cambiamento, più reattivo dovrebbe essere
             adaptive_smooth = self.base_smooth_factor + (velocity * self.smooth_acceleration)
-            adaptive_smooth = min(adaptive_smooth, 0.8)  # Limita il massimo
+            adaptive_smooth = min(adaptive_smooth, 0.8)
 
-            # Interpolazione esponenziale con fattore adattivo
-            # Normalizza per il frame rate - monitor più veloci = smoothing più veloce
-            frame_rate_factor = self.frame_rate / 60.0  # Normalizza rispetto a 60Hz
+            frame_rate_factor = self.frame_rate / 60.0
             time_factor = 1 - math.exp(-delta_time * adaptive_smooth * 60 * frame_rate_factor)
 
-            # Interpola tra il valore corrente e il target
             self.current_amplitudes[i] += (new_amplitudes[i] - self.current_amplitudes[i]) * time_factor
-
-            # Aggiungi una piccola componente della media mobile per stabilità
             smoothed_value = self.current_amplitudes[i] * 0.9 + avg_amplitude * 0.1
             smoothed.append(smoothed_value)
 
@@ -560,7 +592,7 @@ class EqualizerOpenGLThread(threading.Thread):
         previous_time = time.time()
 
         # Timing più preciso
-        last_frame_time = glfw.get_time()
+        last_frame_time = time.perf_counter()
 
         # -------------------------
         # MAIN LOOP
@@ -590,24 +622,24 @@ class EqualizerOpenGLThread(threading.Thread):
                     break
 
             # 2) Calcola FFT a intervalli regolari
-            current_time = time.time()
+            current_time = time.perf_counter()
             if (current_time - self.last_fft_time) >= self.fft_interval:
                 fft_window = self.audio_accumulator.get_window_for_fft()
                 if fft_window.size > 0:
                     if GENERAL_LOG:
                         print('LOG: Start FFT computation')
 
-                    t0 = time.time()
+                    t0 = time.perf_counter()
                     raw_amplitudes = self.create_equalizer(
                         audio_data=fft_window,
                         frequency_bands=self.frequency_bands,
                         noise_threshold=self._noise_threshold,
                         channels=self._channels
                     )
-                    t1 = time.time()
+                    t1 = time.perf_counter()
 
                     if PERF_LOGS:
-                        print(f"PERF LOG: FFT took {(t1 - t0) * 1000:.2f} ms")
+                        print(f"PERF LOG: FFT took {(t1 - t0) * 1000:.3f} ms")
 
                     # Aggiorna i target con smoothing
                     self.target_amplitudes = raw_amplitudes
@@ -625,7 +657,7 @@ class EqualizerOpenGLThread(threading.Thread):
 
             if PERF_LOGS and frame_delta > 0:
                 fps = 1.0 / frame_delta
-                print(f"PERF LOG: FrameTime = {frame_delta * 1000:.2f}ms (FPS ~ {fps:.1f})")
+                print(f"PERF LOG: FrameTime = {frame_delta * 1000:.3f}ms (FPS ~ {fps:.1f})")
 
         # Cleanup
         glfw.destroy_window(window)
