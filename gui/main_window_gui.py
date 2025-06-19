@@ -92,7 +92,7 @@ class AudioCaptureGUI(ctk.CTk):
         self.file_picker = BackgroundFilepickerFrame(settings_frame,
                                                      header_name='Background Image Path:',
                                                      placeholder_text= 'Insert background image path',
-                                                     apply_command=self.apply_bg_comand)
+                                                     apply_command=self.apply_bg_command)
         self.file_picker.pack(side=tk.TOP, padx=10, pady=10, fill=tk.X, expand=False)
         self.bg_filename = None
 
@@ -226,14 +226,42 @@ class AudioCaptureGUI(ctk.CTk):
             tuple: width and height of the canvas
         """
         return (self.equalizer_canvas.winfo_width(), self.equalizer_canvas.winfo_height())
-    
-    def apply_bg_comand(self):
-        # load canvas bg image
-        self.bg_img = Image.open(self.file_picker.get_filename())
-        self.bg_img_used = self.bg_img.copy()
-        self.bg_img_used.putalpha(int(255 * self.bg_alpha))
-        self.apply_background()
-        self.update_bg_opengl(self.bg_img)
+
+    def apply_bg_command(self):
+        """
+        Applica l'immagine di sfondo selezionata all'equalizzatore.
+
+        Raises:
+            FileNotFoundError: Se il file non esiste
+            PIL.UnidentifiedImageError: Se il file non è un'immagine valida
+        """
+        filename = self.file_picker.get_filename()
+        if not filename:
+            CTkMessagebox(
+                title='Errore',
+                message='Nessun file selezionato!',
+                icon="warning"
+            )
+            return
+
+        try:
+            self.bg_img = Image.open(filename)
+            self.bg_img_used = self.bg_img.copy()
+            self.bg_img_used.putalpha(int(255 * self.bg_alpha))
+            self.apply_background()
+            self.update_bg_opengl(self.bg_img)
+        except FileNotFoundError:
+            CTkMessagebox(
+                title='Errore',
+                message='File non trovato!',
+                icon="error"
+            )
+        except Exception as e:
+            CTkMessagebox(
+                title='Errore',
+                message=f'Errore nel caricamento dell\'immagine: {str(e)}',
+                icon="error"
+            )
 
     def apply_background(self):
         self.equalizer_canvas.update_idletasks()
