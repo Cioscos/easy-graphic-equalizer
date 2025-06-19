@@ -23,6 +23,7 @@ from resource_manager import ResourceManager
 MAX_QUEUE_SIZE = 200
 INITIAL_FREQUENCIES_BANDS = 9
 SINGLE_LEFT_MOUSE_BOTTON_CLICK = '<Button-1>'
+DOUBLE_LEFT_MOUSE_BOTTON_CLICK = '<Double-Button-1>'
 CLOSE_WINDOW_EVENT = 'WM_DELETE_WINDOW'
 CONFIGURE_EVENT = '<Configure>'
 
@@ -74,7 +75,7 @@ class AudioCaptureGUI(ctk.CTk):
         # Start the coroutine to retrieve the devices list
         asyncio.run(self.load_devices())
 
-        self.device_listbox.bind(SINGLE_LEFT_MOUSE_BOTTON_CLICK, self.on_device_selected)
+        self.device_listbox.bind(DOUBLE_LEFT_MOUSE_BOTTON_CLICK, self.on_device_selected)
 
         # Create settings frame
         # Inizializza le variabili necessarie prima di creare i tabs
@@ -130,7 +131,7 @@ class AudioCaptureGUI(ctk.CTk):
         # Create start/stop button animato
         self.start_stop_button = AnimatedButton(
             buttons_frame,
-            text="Start/Pause",
+            text="Start",  # Testo iniziale
             command=self.start_stop_capture,
             font=("Roboto", 16),
             fg_color='#6c757d',  # Grigio per stato disabilitato
@@ -200,6 +201,21 @@ class AudioCaptureGUI(ctk.CTk):
         self.last_device_selected = None
         self.resize_scheduled = False
         self.help_window = None
+        self.is_capturing = False
+
+    def debug_state(self):
+        """
+        Stampa lo stato corrente per debug.
+        """
+        print(f"""
+        === DEBUG STATE ===
+        is_capturing: {self.is_capturing}
+        audio_thread attivo: {self.audio_thread is not None and self.audio_thread.is_alive()}
+        canvas_thread attivo: {self.canvas_thread is not None and self.canvas_thread.is_alive()}
+        pulsante abilitato: {self.start_stop_button.cget('state') == 'normal'}
+        testo pulsante: {self.start_stop_button.cget('text')}
+        ==================
+        """)
 
     def get_canvas_size(self) -> tuple[int, int]:
         """
@@ -380,7 +396,7 @@ class AudioCaptureGUI(ctk.CTk):
 
         return monitors_name
 
-    def on_device_selected(self, _):
+    def on_device_selected(self, event):  # Nota: event invece di _
         """
         Quando un device è selezionato, abilita il pulsante start/stop.
         """
@@ -389,7 +405,12 @@ class AudioCaptureGUI(ctk.CTk):
             device_index = selection[0]
             device = self.devices[device_index]
 
-            if (self.last_device_selected != device):
+            # Se stiamo già catturando, ferma prima
+            if self.is_capturing:
+                self.stop_capture()
+                self.is_capturing = False
+
+            if self.last_device_selected != device:
                 if self.audio_queue:
                     self.audio_queue = None
 
@@ -407,7 +428,7 @@ class AudioCaptureGUI(ctk.CTk):
                     fg_color='#28a745',  # Verde
                     hover_color='#218838'
                 )
-                self.is_on_start = True  # Assicurati che sia nello stato corretto
+                self.start_stop_button.configure(text="Start")
 
     def stop_audio_thread(self):
         if self.audio_thread:
@@ -497,56 +518,117 @@ class AudioCaptureGUI(ctk.CTk):
         """
         Start the equalizer thread when the start button is pressed
         """
-        if not self.canvas_thread:
-            if self.audio_thread:
-                # Start the OpenGL window in a new thread
-                self.canvas_thread = EqualizerTkinterThread(
-                    self.audio_queue,
-                    noise_threshold=self.noise_slider.get_value(),
-                    n_bands=int(self.frequency_slider.get_value()),
-                    canvas=self.equalizer_canvas,
-                    control_queue=self.equalizer_control_queue)
-                self.canvas_thread.start()
+        print(f"start_capture: canvas_thread = {self.canvas_thread}")
+        print(f"start_capture: audio_thread attivo = {self.audio_thread and self.audio_thread.is_alive()}")
 
+        if not self.canvas_thread:
+            if self.audio_thread and self.audio_thread.is_alive():
+                try:
+                    # Start the equalizer thread
+                    self.canvas_thread = EqualizerTkinterThread(
+                        self.audio_queue,
+                        noise_threshold=self.noise_slider.get_value(),
+                        n_bands=int(self.frequency_slider.get_value()),
+                        canvas=self.equalizer_canvas,
+                        control_queue=self.equalizer_control_queue)
+                    self.canvas_thread.start()
+                    print("Thread equalizer creato e avviato")
+                except Exception as e:
+                    print(f"Errore nella creazione del thread: {e}")
+                    self.canvas_thread = None
             else:
+                print("Audio thread non attivo!")
                 self.show_no_audio_thread_warning()
+        else:
+            print("Canvas thread già esistente!")
 
     def stop_capture(self):
         """
         Check if the equalizer thread is running and if it is
-        grecefully stop it
+        gracefully stop it
         """
         if self.canvas_thread and self.canvas_thread.is_alive():
             self.canvas_thread.stop()
-            self.canvas_thread = None
+            # Aspetta che il thread termini completamente
+            while self.canvas_thread.is_alive():
+                self.canvas_thread.join(timeout=0.1)
+                self.update()  # Mantieni la GUI responsiva
+
+        # Pulisci il canvas dopo aver fermato il thread
+        if self.equalizer_canvas:
+            self.equalizer_canvas.delete("bar")  # Rimuovi tutte le barre
+
+        self.canvas_thread = None
 
     def start_stop_capture(self):
         """
-        Avvia o ferma la cattura audio con animazione del pulsante.
+        Avvia o ferma la cattura audio.
         """
-        if self.is_on_start:
-            # Passa a stato STOP (rosso)
-            self.start_stop_button.update_base_colors(
-                fg_color='#dc3545',  # Rosso
-                hover_color='#c82333'
-            )
-            self.start_stop_button.configure(text="Stop")
+        if not self.audio_thread or not self.audio_thread.is_alive():
+            self.show_no_audio_thread_warning()
+            return
+
+        # Verifica che la coda audio sia valida
+        if not self.audio_queue:
+            print("ERRORE: audio_queue non valida!")
+            return
+
+        if not self.is_capturing:
+            # Svuota la coda prima di iniziare
+            while not self.audio_queue.empty():
+                try:
+                    self.audio_queue.get_nowait()
+                except:
+                    break
+
+            # Avvia la cattura
+            print(f"Avvio cattura... Dimensione coda: {self.audio_queue.qsize()}")
             self.start_capture()
-            self.is_on_start = False
+            # Verifica che sia partito correttamente prima di cambiare stato
+            self.after(100, self._check_capture_started)
         else:
-            # Torna a stato START (verde)
+            # Ferma la cattura
+            print("Arresto cattura...")
+            self.stop_capture()
+            self.is_capturing = False
+            # Aggiorna pulsante a verde
             self.start_stop_button.update_base_colors(
-                fg_color='#28a745',  # Verde
+                fg_color='#28a745',
                 hover_color='#218838'
             )
             self.start_stop_button.configure(text="Start")
-            self.stop_capture()
-            self.is_on_start = True
+            print("Cattura arrestata")
+
+    def _check_capture_started(self):
+        """
+        Verifica che la cattura sia effettivamente partita e aggiorna l'UI.
+        """
+        if self.canvas_thread and self.canvas_thread.is_alive():
+            self.is_capturing = True
+            # Aggiorna pulsante a rosso
+            self.start_stop_button.update_base_colors(
+                fg_color='#dc3545',
+                hover_color='#c82333'
+            )
+            self.start_stop_button.configure(text="Stop")
+            print("Cattura avviata con successo")
+        else:
+            print("Errore: thread non avviato")
+            self.is_capturing = False
 
     def fullscreen_command(self):
-        self.stop_capture()
-        self.is_on_start = True
-        self.start_stop_button.configure(fg_color='green')
+        """
+        Apre la visualizzazione fullscreen.
+        """
+        # Se stiamo catturando, ferma prima
+        if self.is_capturing:
+            self.stop_capture()
+            self.is_capturing = False
+            self.start_stop_button.update_base_colors(
+                fg_color='#28a745',
+                hover_color='#218838'
+            )
+            self.start_stop_button.configure(text="Start")
 
         if self.audio_thread:
             if self.equalizer_opengl_thread:
@@ -555,16 +637,17 @@ class AudioCaptureGUI(ctk.CTk):
                     self.equalizer_opengl_thread.join(timeout=0.1)
                 self.equalizer_opengl_thread = None
             else:
-                self.equalizer_opengl_thread = EqualizerOpenGLThread(self.audio_queue,
-                                                                    noise_threshold=self.noise_slider.get_value(),
-                                                                    n_bands=int(self.frequency_slider.get_value()),
-                                                                    control_queue=self.equalizer_control_queue,
-                                                                    bg_image=self.bg_img,
-                                                                    monitor=self.selected_monitor,
-                                                                    window_close_callback=self.opengl_window_closed,
-                                                                    workers=self.processors_number_frame.get_value(),
-                                                                    auto_workers=self.processors_number_frame.is_auto())
-
+                self.equalizer_opengl_thread = EqualizerOpenGLThread(
+                    self.audio_queue,
+                    noise_threshold=self.noise_slider.get_value(),
+                    n_bands=int(self.frequency_slider.get_value()),
+                    control_queue=self.equalizer_control_queue,
+                    bg_image=self.bg_img,
+                    monitor=self.selected_monitor,
+                    window_close_callback=self.opengl_window_closed,
+                    workers=self.processors_number_frame.get_value(),
+                    auto_workers=self.processors_number_frame.is_auto()
+                )
                 self.equalizer_opengl_thread.start()
         else:
             self.show_no_audio_thread_warning()

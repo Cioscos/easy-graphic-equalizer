@@ -29,6 +29,8 @@ class AnimatedButton(ctk.CTkButton):
             click_scale: Fattore di scala quando il pulsante è cliccato
             *args, **kwargs: Argomenti passati a CTkButton
         """
+        self._user_command = kwargs.pop('command', None)
+
         # Salva i parametri originali
         self._fg_color_original = kwargs.get('fg_color', '#1f538d')
         self._hover_color_original = kwargs.get('hover_color', None)
@@ -65,18 +67,41 @@ class AnimatedButton(ctk.CTkButton):
         """
         Configura i binding degli eventi compatibili con CustomTkinter.
         """
-        # Usa il canvas interno di CustomTkinter per i binding
-        if hasattr(self, '_canvas'):
-            self._canvas.bind("<Enter>", self._on_enter)
-            self._canvas.bind("<Leave>", self._on_leave)
-            self._canvas.bind("<ButtonPress-1>", self._on_press)
-            self._canvas.bind("<ButtonRelease-1>", self._on_release)
-        else:
-            # Fallback per compatibilità
-            self.bind("<Enter>", self._on_enter)
-            self.bind("<Leave>", self._on_leave)
-            self.bind("<ButtonPress-1>", self._on_press)
-            self.bind("<ButtonRelease-1>", self._on_release)
+        # Bind direttamente sul widget principale invece che sul canvas
+        self.bind("<Enter>", self._on_enter, add="+")
+        self.bind("<Leave>", self._on_leave, add="+")
+        self.bind("<Button-1>", self._on_click, add="+")
+
+    def _on_click(self, event=None):
+        """
+        Gestisce il click completo (press + release).
+        """
+        if self.cget("state") != "disabled":
+            # Animazione di click
+            self._animate_to_scale(self.click_scale)
+            # Programma il ritorno alla scala normale
+            self.after(100, lambda: self._animate_to_scale(self.hover_scale if self._is_hovered() else 1.0))
+
+            # Invoca il comando
+            if self._user_command:
+                self._user_command()
+
+    def _is_hovered(self):
+        """
+        Controlla se il mouse è sopra il widget.
+        """
+        try:
+            x = self.winfo_pointerx()
+            y = self.winfo_pointery()
+            widget_x = self.winfo_rootx()
+            widget_y = self.winfo_rooty()
+            widget_width = self.winfo_width()
+            widget_height = self.winfo_height()
+
+            return (widget_x <= x <= widget_x + widget_width and
+                    widget_y <= y <= widget_y + widget_height)
+        except:
+            return False
 
     def _on_enter(self, event=None):
         """
