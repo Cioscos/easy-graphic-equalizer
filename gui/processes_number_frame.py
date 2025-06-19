@@ -1,14 +1,14 @@
 import customtkinter as ctk
 from typing import Callable, Optional
 
-class ProcessesNumberFrame(ctk.CTkFrame):
 
+class ProcessesNumberFrame(ctk.CTkFrame):
     RETURN_BUTTON = '<Return>'
 
     def __init__(self,
                  *args,
                  max_value: int = 100,
-                 initial_value : Optional[int] = None,
+                 initial_value: Optional[int] = None,
                  command: Callable,
                  auto_callback: Callable,
                  **kwargs):
@@ -20,9 +20,25 @@ class ProcessesNumberFrame(ctk.CTkFrame):
         self._auto_callback = auto_callback
         self._create_widgets()
 
+    def _validate_input(self, value):
+        """
+        Valida l'input dell'utente per il numero di processori.
+
+        Args:
+            value: Il valore da validare
+
+        Returns:
+            bool: True se il valore è valido, False altrimenti
+        """
+        try:
+            int_value = int(value)
+            return 0 <= int_value <= self._max_value
+        except ValueError:
+            return False
+
     def _create_widgets(self):
         self.columnconfigure(0, weight=2)
-        
+
         header = ctk.CTkLabel(self, text='Number of processors')
         header.pack(pady=5)
 
@@ -41,14 +57,17 @@ class ProcessesNumberFrame(ctk.CTkFrame):
 
         if not self._initial_value:
             self._initial_value = 1
-        
+
         self._var_inputbox = ctk.IntVar(value=self._initial_value)
 
         input_selection_frame = ctk.CTkFrame(whole_frame)
 
+        vcmd = (self.register(self._validate_input), '%P')
         self._inputbox = ctk.CTkEntry(input_selection_frame,
                                       textvariable=self._var_inputbox,
-                                      width=50)
+                                      width=50,
+                                      validate='key',
+                                      validatecommand=vcmd)
         self._inputbox.pack(side=ctk.LEFT, padx=5, pady=5)
         self._inputbox.bind(self.RETURN_BUTTON, command=self._command)
 
@@ -59,7 +78,8 @@ class ProcessesNumberFrame(ctk.CTkFrame):
                                               width=5,
                                               height=5,
                                               font=("Roboto", 10),
-                                              command=self._combine_funcs(self._increase_value, self._return_value_callback))
+                                              command=self._combine_funcs(self._increase_value,
+                                                                          self._return_value_callback))
         self._arrow_up_button.pack()
 
         self._arrow_down_button = ctk.CTkButton(arrows_frame,
@@ -67,12 +87,13 @@ class ProcessesNumberFrame(ctk.CTkFrame):
                                                 width=5,
                                                 height=5,
                                                 font=("Roboto", 10),
-                                                command=self._combine_funcs(self._decrease_value, self._return_value_callback))
+                                                command=self._combine_funcs(self._decrease_value,
+                                                                            self._return_value_callback))
         self._arrow_down_button.pack()
 
         arrows_frame.pack(side=ctk.LEFT, padx=2)
 
-        input_selection_frame.grid(row=0, column=2, padx= 5, pady=5)
+        input_selection_frame.grid(row=0, column=2, padx=5, pady=5)
 
         whole_frame.pack(fill=ctk.X, padx=5, pady=5)
 
@@ -81,16 +102,17 @@ class ProcessesNumberFrame(ctk.CTkFrame):
         this function will call the passed functions
         with the arguments that are passed to the functions
         """
+
         def inner_combined_func(*args, **kwargs):
             for f in funcs:
                 # Calling functions with arguments, if any
                 f(*args, **kwargs)
-    
+
         # returning the reference of inner_combined_func
         # this reference will have the called result of all
         # the functions that are passed to the combined_funcs
         return inner_combined_func
-    
+
     def _return_value_callback(self):
         self._command(self.get_value())
 
@@ -119,6 +141,6 @@ class ProcessesNumberFrame(ctk.CTkFrame):
 
     def get_value(self):
         return self._var_inputbox.get()
-    
+
     def is_auto(self):
         return self._var_checkbox.get()
