@@ -16,6 +16,7 @@ from gui.slider_frame import SliderCustomFrame
 from gui.optionmenu_frame import OptionMenuCustomFrame
 from gui.background_filepicker_frame import BackgroundFilepickerFrame
 from gui.help_window import HelpWindow
+from gui.animated_button import AnimatedButton
 from gui.processes_number_frame import ProcessesNumberFrame
 from resource_manager import ResourceManager
 
@@ -126,28 +127,63 @@ class AudioCaptureGUI(ctk.CTk):
         self.is_on_start = True
 
         # Create start/stop button
-        self.start_stop_button = ctk.CTkButton(buttons_frame,
-                  text="Start/Pause",
-                  command=self.start_stop_capture,
-                  font=("Roboto", 16),
-                  fg_color='green',
-                  state='disabled')
+        # Create start/stop button animato
+        self.start_stop_button = AnimatedButton(
+            buttons_frame,
+            text="Start/Pause",
+            command=self.start_stop_capture,
+            font=("Roboto", 16),
+            fg_color='#6c757d',  # Grigio per stato disabilitato
+            hover_color='#5a6268',
+            state='disabled',
+            corner_radius=10,
+            height=45,
+            animation_duration=200,
+            hover_scale=1.05,
+            click_scale=0.95
+        )
         self.start_stop_button.pack(padx=5, pady=5, fill=ctk.BOTH, side=tk.LEFT, expand=True)
 
-        self.fullscreen_icn = ctk.CTkImage(dark_image=Image.open(self.resource_manager.get_image_path('maximize.png', 'icons')))
-        self.fullscreen_btn = ctk.CTkButton(buttons_frame,
-                                            command=self.fullscreen_command,
-                                            image=self.fullscreen_icn,
-                                            text='Fullscreen',
-                                            font=("Roboto", 16))
+        # Fullscreen button animato
+        self.fullscreen_icn = ctk.CTkImage(
+            dark_image=Image.open(self.resource_manager.get_image_path('maximize.png', 'icons')),
+            size=(20, 20)
+        )
+        self.fullscreen_btn = AnimatedButton(
+            buttons_frame,
+            command=self.fullscreen_command,
+            image=self.fullscreen_icn,
+            text='Fullscreen',
+            font=("Roboto", 16),
+            fg_color='#17a2b8',  # Azzurro
+            hover_color='#138496',
+            corner_radius=10,
+            height=45,
+            animation_duration=200,
+            hover_scale=1.05,
+            click_scale=0.95
+        )
         self.fullscreen_btn.pack(padx=5, pady=5, fill=ctk.BOTH, side=tk.LEFT, expand=True)
 
-        help_icn = ctk.CTkImage(dark_image=Image.open(self.resource_manager.get_image_path('help.png', 'icons')))
-        help_button = ctk.CTkButton(buttons_frame,
-                                    command=self.open_help_window,
-                                    image=help_icn,
-                                    text='Help',
-                                    font=("Roboto", 16))
+        # Help button animato
+        help_icn = ctk.CTkImage(
+            dark_image=Image.open(self.resource_manager.get_image_path('help.png', 'icons')),
+            size=(20, 20)
+        )
+        help_button = AnimatedButton(
+            buttons_frame,
+            command=self.open_help_window,
+            image=help_icn,
+            text='Help',
+            font=("Roboto", 16),
+            fg_color='#6c757d',  # Grigio
+            hover_color='#5a6268',
+            corner_radius=10,
+            height=45,
+            animation_duration=200,
+            hover_scale=1.05,
+            click_scale=0.95
+        )
         help_button.pack(padx=5, pady=5, fill=ctk.BOTH, side=tk.LEFT, expand=True)
 
         # BIND THE EVENT
@@ -346,16 +382,13 @@ class AudioCaptureGUI(ctk.CTk):
 
     def on_device_selected(self, _):
         """
-        When a device from the listbox is choosen, it starts the audio_thread
-        and it says which devide the thread has to listen.
+        Quando un device è selezionato, abilita il pulsante start/stop.
         """
-        # Start audio capture when a device is selected
         selection = self.device_listbox.curselection()
         if selection:
             device_index = selection[0]
             device = self.devices[device_index]
 
-            # Check if the device was already selected
             if (self.last_device_selected != device):
                 if self.audio_queue:
                     self.audio_queue = None
@@ -367,7 +400,14 @@ class AudioCaptureGUI(ctk.CTk):
                     self.audio_queue, device=device)
                 self.audio_thread.start()
                 self.last_device_selected = device
+
+                # Abilita il pulsante e imposta il colore verde
                 self.start_stop_button.configure(state='normal')
+                self.start_stop_button.update_base_colors(
+                    fg_color='#28a745',  # Verde
+                    hover_color='#218838'
+                )
+                self.is_on_start = True  # Assicurati che sia nello stato corretto
 
     def stop_audio_thread(self):
         if self.audio_thread:
@@ -481,12 +521,25 @@ class AudioCaptureGUI(ctk.CTk):
             self.canvas_thread = None
 
     def start_stop_capture(self):
+        """
+        Avvia o ferma la cattura audio con animazione del pulsante.
+        """
         if self.is_on_start:
-            self.start_stop_button.configure(fg_color='red')
+            # Passa a stato STOP (rosso)
+            self.start_stop_button.update_base_colors(
+                fg_color='#dc3545',  # Rosso
+                hover_color='#c82333'
+            )
+            self.start_stop_button.configure(text="Stop")
             self.start_capture()
             self.is_on_start = False
         else:
-            self.start_stop_button.configure(fg_color='green')
+            # Torna a stato START (verde)
+            self.start_stop_button.update_base_colors(
+                fg_color='#28a745',  # Verde
+                hover_color='#218838'
+            )
+            self.start_stop_button.configure(text="Start")
             self.stop_capture()
             self.is_on_start = True
 
