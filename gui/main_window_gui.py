@@ -76,72 +76,84 @@ class AudioCaptureGUI(ctk.CTk):
         self.device_listbox.bind(SINGLE_LEFT_MOUSE_BOTTON_CLICK, self.on_device_selected)
 
         # Create settings frame
-        settings_frame = ctk.CTkScrollableFrame(left_frame, border_width=2)
-        settings_frame.pack(side=tk.BOTTOM, fill=tk.BOTH, expand=True)
-        ctk.CTkLabel(settings_frame, text="Settings", font=("Roboto", 18, "bold")).pack(side=tk.TOP, padx=5, pady=5)
-        
-        # Create theme Option
-        self.appearance_mode = OptionMenuCustomFrame(settings_frame,
-                                                     header_name='Appearance Mode:',
-                                                     values=["Light", "Dark", "System"],
-                                                     initial_value="System",
-                                                     command=self.change_appearance_mode_event)
-        self.appearance_mode.pack(side=tk.TOP, padx=10, pady=10, fill=tk.X, expand=False)
-
-        # Background file picker
-        self.file_picker = BackgroundFilepickerFrame(settings_frame,
-                                                     header_name='Background Image Path:',
-                                                     placeholder_text= 'Insert background image path',
-                                                     apply_command=self.apply_bg_command)
-        self.file_picker.pack(side=tk.TOP, padx=10, pady=10, fill=tk.X, expand=False)
+        # Inizializza le variabili necessarie prima di creare i tabs
+        self.bg_alpha = 0.5
         self.bg_filename = None
-
-        # fullscreen monitor option
         self.selected_monitor = None
         self.available_monitors = self.get_available_monitors()
-        if len(self.available_monitors) != 1:
-            self.monitor_option = OptionMenuCustomFrame(settings_frame,
-                                                        header_name='Fullscreen monitor',
-                                                        values=self.available_monitors,
-                                                        initial_value=self.available_monitors[0],
-                                                        command=self.change_selected_monitor)
-            self.monitor_option.pack(side=tk.TOP, padx=10, pady=10, fill=tk.X, expand=False)
 
-        # alpha slider
-        self.alpha_slider = SliderCustomFrame(settings_frame,
-                                              header_name='Alpha amount:',
-                                              command=self.update_alpha,
-                                              initial_value=self.bg_alpha)
-        self.alpha_slider.pack(side=tk.TOP, padx=10, pady=5, fill=tk.X, expand=False)
+        # Create settings tabs invece del settings frame
+        settings_label = ctk.CTkLabel(left_frame, text="Impostazioni", font=("Roboto", 18, "bold"))
+        settings_label.pack(side=tk.TOP, padx=5, pady=5)
 
-        # noise threshold slider 
-        self.noise_slider = SliderCustomFrame(settings_frame,
-                                              header_name='Noise threshold:',
-                                              command=self.update_noise_threshold)
-        self.noise_slider.pack(side=tk.TOP, padx=10, pady=5, fill=tk.X, expand=False)
-
-        # Bands number
-        self.frequency_slider = SliderCustomFrame(settings_frame,
-                                              header_name='Frequency bands:',
-                                              command=self.update_frequency_bands,
-                                              from_=1,
-                                              to=100,
-                                              steps=32,
-                                              initial_value=INITIAL_FREQUENCIES_BANDS,
-                                              warning_trigger_value=15,
-                                              warning_text='The number of the bard could be too high.\nConsider to use the fullscreen view',
-                                              value_type=SliderCustomFrame.ValueType.INT)
-        self.frequency_slider.pack(side=tk.TOP, padx=10, pady=5, fill=tk.X, expand=False)
-
-        # Processors number
-        self.processors_number_frame = ProcessesNumberFrame(
-            settings_frame,
-            max_value=5,
-            initial_value=1,
-            command=self.update_workers_number,
-            auto_callback=self.update_auto_workers
-        )
-        self.processors_number_frame.pack(side=tk.TOP, padx=10, pady=5, fill=tk.X, expand=False)
+        # Crea il sistema a tabs
+        self.settings_tabs = self.create_settings_tabs(left_frame)
+        # settings_frame = ctk.CTkScrollableFrame(left_frame, border_width=2)
+        # settings_frame.pack(side=tk.BOTTOM, fill=tk.BOTH, expand=True)
+        # ctk.CTkLabel(settings_frame, text="Settings", font=("Roboto", 18, "bold")).pack(side=tk.TOP, padx=5, pady=5)
+        #
+        # # Create theme Option
+        # self.appearance_mode = OptionMenuCustomFrame(settings_frame,
+        #                                              header_name='Appearance Mode:',
+        #                                              values=["Light", "Dark", "System"],
+        #                                              initial_value="System",
+        #                                              command=self.change_appearance_mode_event)
+        # self.appearance_mode.pack(side=tk.TOP, padx=10, pady=10, fill=tk.X, expand=False)
+        #
+        # # Background file picker
+        # self.file_picker = BackgroundFilepickerFrame(settings_frame,
+        #                                              header_name='Background Image Path:',
+        #                                              placeholder_text= 'Insert background image path',
+        #                                              apply_command=self.apply_bg_command)
+        # self.file_picker.pack(side=tk.TOP, padx=10, pady=10, fill=tk.X, expand=False)
+        # self.bg_filename = None
+        #
+        # # fullscreen monitor option
+        # self.selected_monitor = None
+        # self.available_monitors = self.get_available_monitors()
+        # if len(self.available_monitors) != 1:
+        #     self.monitor_option = OptionMenuCustomFrame(settings_frame,
+        #                                                 header_name='Fullscreen monitor',
+        #                                                 values=self.available_monitors,
+        #                                                 initial_value=self.available_monitors[0],
+        #                                                 command=self.change_selected_monitor)
+        #     self.monitor_option.pack(side=tk.TOP, padx=10, pady=10, fill=tk.X, expand=False)
+        #
+        # # alpha slider
+        # self.alpha_slider = SliderCustomFrame(settings_frame,
+        #                                       header_name='Alpha amount:',
+        #                                       command=self.update_alpha,
+        #                                       initial_value=self.bg_alpha)
+        # self.alpha_slider.pack(side=tk.TOP, padx=10, pady=5, fill=tk.X, expand=False)
+        #
+        # # noise threshold slider
+        # self.noise_slider = SliderCustomFrame(settings_frame,
+        #                                       header_name='Noise threshold:',
+        #                                       command=self.update_noise_threshold)
+        # self.noise_slider.pack(side=tk.TOP, padx=10, pady=5, fill=tk.X, expand=False)
+        #
+        # # Bands number
+        # self.frequency_slider = SliderCustomFrame(settings_frame,
+        #                                       header_name='Frequency bands:',
+        #                                       command=self.update_frequency_bands,
+        #                                       from_=1,
+        #                                       to=100,
+        #                                       steps=32,
+        #                                       initial_value=INITIAL_FREQUENCIES_BANDS,
+        #                                       warning_trigger_value=15,
+        #                                       warning_text='The number of the bard could be too high.\nConsider to use the fullscreen view',
+        #                                       value_type=SliderCustomFrame.ValueType.INT)
+        # self.frequency_slider.pack(side=tk.TOP, padx=10, pady=5, fill=tk.X, expand=False)
+        #
+        # # Processors number
+        # self.processors_number_frame = ProcessesNumberFrame(
+        #     settings_frame,
+        #     max_value=5,
+        #     initial_value=1,
+        #     command=self.update_workers_number,
+        #     auto_callback=self.update_auto_workers
+        # )
+        # self.processors_number_frame.pack(side=tk.TOP, padx=10, pady=5, fill=tk.X, expand=False)
 
         # Create right frame
         right_frame = ctk.CTkFrame(self, border_width=2)
@@ -262,6 +274,107 @@ class AudioCaptureGUI(ctk.CTk):
                 message=f'Errore nel caricamento dell\'immagine: {str(e)}',
                 icon="error"
             )
+
+    # gui/main_window_gui.py - aggiungi questo metodo alla classe AudioCaptureGUI
+
+    def create_settings_tabs(self, parent):
+        """
+        Crea un sistema a tab per organizzare meglio le impostazioni.
+
+        Args:
+            parent: Il widget padre
+
+        Returns:
+            CTkTabview: Il widget tabview creato
+        """
+        tabview = ctk.CTkTabview(parent, border_width=2)
+        tabview.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+
+        # Tab Visualizzazione
+        tabview.add("🎨 Visualizzazione")
+        vis_tab = tabview.tab("🎨 Visualizzazione")
+
+        # Appearance mode
+        self.appearance_mode = OptionMenuCustomFrame(
+            vis_tab,
+            header_name='Tema:',
+            values=["Light", "Dark", "System"],
+            initial_value="System",
+            command=self.change_appearance_mode_event
+        )
+        self.appearance_mode.pack(side=tk.TOP, padx=10, pady=5, fill=tk.X)
+
+        # Background settings
+        self.file_picker = BackgroundFilepickerFrame(
+            vis_tab,
+            header_name='Immagine di Sfondo:',
+            placeholder_text='Percorso immagine...',
+            apply_command=self.apply_bg_command
+        )
+        self.file_picker.pack(side=tk.TOP, padx=10, pady=5, fill=tk.X)
+
+        # Alpha slider
+        self.alpha_slider = SliderCustomFrame(
+            vis_tab,
+            header_name='Trasparenza:',
+            command=self.update_alpha,
+            initial_value=self.bg_alpha
+        )
+        self.alpha_slider.pack(side=tk.TOP, padx=10, pady=5, fill=tk.X)
+
+        # Tab Audio
+        tabview.add("🎵 Audio")
+        audio_tab = tabview.tab("🎵 Audio")
+
+        # Noise threshold
+        self.noise_slider = SliderCustomFrame(
+            audio_tab,
+            header_name='Soglia Rumore:',
+            command=self.update_noise_threshold
+        )
+        self.noise_slider.pack(side=tk.TOP, padx=10, pady=5, fill=tk.X)
+
+        # Frequency bands
+        self.frequency_slider = SliderCustomFrame(
+            audio_tab,
+            header_name='Bande di Frequenza:',
+            command=self.update_frequency_bands,
+            from_=1,
+            to=100,
+            steps=32,
+            initial_value=INITIAL_FREQUENCIES_BANDS,
+            warning_trigger_value=15,
+            warning_text='Numero elevato di bande!\nConsidera la modalità fullscreen',
+            value_type=SliderCustomFrame.ValueType.INT
+        )
+        self.frequency_slider.pack(side=tk.TOP, padx=10, pady=5, fill=tk.X)
+
+        # Tab Performance
+        tabview.add("⚡ Performance")
+        perf_tab = tabview.tab("⚡ Performance")
+
+        # Processors
+        self.processors_number_frame = ProcessesNumberFrame(
+            perf_tab,
+            max_value=5,
+            initial_value=1,
+            command=self.update_workers_number,
+            auto_callback=self.update_auto_workers
+        )
+        self.processors_number_frame.pack(side=tk.TOP, padx=10, pady=5, fill=tk.X)
+
+        # Monitor selection (solo se ci sono più monitor)
+        if len(self.available_monitors) > 1:
+            self.monitor_option = OptionMenuCustomFrame(
+                perf_tab,
+                header_name='Monitor Fullscreen:',
+                values=self.available_monitors,
+                initial_value=self.available_monitors[0],
+                command=self.change_selected_monitor
+            )
+            self.monitor_option.pack(side=tk.TOP, padx=10, pady=5, fill=tk.X)
+
+        return tabview
 
     def apply_background(self):
         self.equalizer_canvas.update_idletasks()
