@@ -660,9 +660,9 @@ Nel ramo `else:` di `fullscreen_command`, nella chiamata `EqualizerOpenGLThread(
 - [ ] **Step 7: Smoke test import GUI (headless)**
 
 ```bash
-QT_QPA_PLATFORM=offscreen uv run python -c "import gui.main_window_gui as m; assert m._COLOR_MODE_TO_INT['Spettro'] == 3; print('OK')"
+QT_QPA_PLATFORM=offscreen uv run python -c "import gui.main_window_gui as m; assert m._COLOR_MODE_TO_INT['Spettro'] == 3; print('OK')" smoketest
 ```
-Expected: `OK` — verifica l'import del modulo e la mappa modalità senza costruire la finestra (quindi senza enumerare i device audio). Nota: richiede PySide6/soundcard importabili; in un ambiente headless senza backend audio (PulseAudio/PipeWire), salta questo step e affidati alla verifica visiva su Windows (Step 8).
+Expected: `OK` — verifica l'import del modulo e la mappa modalità senza costruire la finestra (quindi senza enumerare i device audio). Nota: l'argomento finale `smoketest` serve come `sys.argv[1]`: su Linux `soundcard` lo legge all'import (`_infer_program_name`) e con `python -c` senza argomenti darebbe `IndexError`. Richiede comunque PySide6/soundcard importabili; in un ambiente senza backend audio (PulseAudio/PipeWire), salta questo step e affidati alla verifica visiva su Windows (Step 8).
 
 - [ ] **Step 8: Verifica visiva (Windows)**
 
@@ -1075,9 +1075,9 @@ Nella chiamata `EqualizerOpenGLThread(...)`, dopo `yellow_split=self.bars_yellow
 - [ ] **Step 5: Smoke test import GUI (headless)**
 
 ```bash
-QT_QPA_PLATFORM=offscreen uv run python -c "import gui.main_window_gui; print('OK')"
+QT_QPA_PLATFORM=offscreen uv run python -c "import gui.main_window_gui; print('OK')" smoketest
 ```
-Expected: `OK` — cattura errori di sintassi/nome nel nuovo codice del tab. Nota: come al Task 5, richiede gli import disponibili nell'ambiente; altrimenti verifica su Windows (Step 6).
+Expected: `OK` — cattura errori di sintassi/nome nel nuovo codice del tab. Nota: l'argomento `smoketest` serve come `sys.argv[1]` (vedi Task 5 Step 7). Richiede gli import disponibili; altrimenti verifica su Windows (Step 6).
 
 - [ ] **Step 6: Verifica visiva (Windows)**
 
