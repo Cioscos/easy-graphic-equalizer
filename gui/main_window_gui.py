@@ -59,6 +59,7 @@ class AudioCaptureGUI(ctk.CTk):
         self.devices = []
         self.canvas_width = self.canvas_height = None
         self.bg_alpha = 0.5
+        self.bars_alpha = 1.0  # opacità delle barre nel renderer OpenGL (1.0 = piene)
         self.bg_video_path = None  # path del video di sfondo selezionato (None = immagine)
         self.selected_monitor = None
         self.available_monitors = self.get_available_monitors()
@@ -343,14 +344,23 @@ class AudioCaptureGUI(ctk.CTk):
         )
         self.file_picker.pack(side=tk.TOP, padx=10, pady=5, fill=tk.X)
 
-        # Trasparenza
+        # Trasparenza dello sfondo (immagine o video)
         self.alpha_slider = SliderCustomFrame(
             vis_tab,
-            header_name='Trasparenza:',
+            header_name='Trasparenza sfondo:',
             command=self.update_alpha,
             initial_value=self.bg_alpha
         )
         self.alpha_slider.pack(side=tk.TOP, padx=10, pady=5, fill=tk.X)
+
+        # Opacità delle barre (solo renderer OpenGL)
+        self.bars_alpha_slider = SliderCustomFrame(
+            vis_tab,
+            header_name='Opacità barre:',
+            command=self.update_bars_alpha,
+            initial_value=self.bars_alpha
+        )
+        self.bars_alpha_slider.pack(side=tk.TOP, padx=10, pady=5, fill=tk.X)
 
         # Selettore monitor per il fullscreen (solo con più monitor disponibili)
         if len(self.available_monitors) > 1:
@@ -495,6 +505,17 @@ class AudioCaptureGUI(ctk.CTk):
         if self.equalizer_opengl_thread:
             message = {
                 "type": "set_alpha",
+                "value": float(value)
+            }
+            self.equalizer_control_queue.put(message)
+
+    def update_bars_alpha(self, value):
+        # L'opacità delle barre è gestita solo dal renderer OpenGL: la preview
+        # Tkinter disegna rettangoli pieni e non ha un concetto di alpha barre.
+        self.bars_alpha = value
+        if self.equalizer_opengl_thread:
+            message = {
+                "type": "set_bars_alpha",
                 "value": float(value)
             }
             self.equalizer_control_queue.put(message)
@@ -659,6 +680,7 @@ class AudioCaptureGUI(ctk.CTk):
                     control_queue=self.equalizer_control_queue,
                     bg_image=self.bg_img,
                     bg_alpha=self.bg_alpha,
+                    bars_alpha=self.bars_alpha,
                     bg_video=self.bg_video_path,
                     monitor=self.selected_monitor,
                     window_close_callback=self.opengl_window_closed

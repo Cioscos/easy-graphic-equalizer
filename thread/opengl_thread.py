@@ -72,12 +72,13 @@ in float vFill;
 out vec4 FragColor;
 uniform float uGreenSplit;
 uniform float uYellowSplit;
+uniform float uBarsAlpha;
 void main() {
     vec3 col;
     if (vFill < uGreenSplit)        col = vec3(0.0, 1.0, 0.0);
     else if (vFill < uYellowSplit)  col = vec3(1.0, 1.0, 0.0);
     else                            col = vec3(1.0, 0.0, 0.0);
-    FragColor = vec4(col, 1.0);
+    FragColor = vec4(col, uBarsAlpha);
 }
 """
 
@@ -144,6 +145,7 @@ class EqualizerOpenGLThread(threading.Thread):
                  monitor=None,
                  bg_image: Optional[Image.Image] = None,
                  bg_alpha: Optional[float] = None,
+                 bars_alpha: float = 1.0,
                  bg_video: Optional[str] = None,
                  window_close_callback: Callable = None):
         super().__init__()
@@ -155,6 +157,7 @@ class EqualizerOpenGLThread(threading.Thread):
         self._monitor = monitor
         self._bg_image = bg_image
         self._bg_alpha = bg_alpha
+        self._bars_alpha = bars_alpha
         self.window_close_callback = window_close_callback
 
         # Oggetti OpenGL (creati in init_gl_objects una volta attivo il contesto)
@@ -348,7 +351,7 @@ class EqualizerOpenGLThread(threading.Thread):
         )
         self._bars_uniforms = {
             name: glGetUniformLocation(self._bars_program, name)
-            for name in ("uNumBars", "uBarWidthFrac", "uGreenSplit", "uYellowSplit")
+            for name in ("uNumBars", "uBarWidthFrac", "uGreenSplit", "uYellowSplit", "uBarsAlpha")
         }
         self._bg_uniforms = {
             name: glGetUniformLocation(self._bg_program, name)
@@ -464,6 +467,7 @@ class EqualizerOpenGLThread(threading.Thread):
         glUniform1f(self._bars_uniforms["uBarWidthFrac"], BAR_WIDTH_FRAC)
         glUniform1f(self._bars_uniforms["uGreenSplit"], GREEN_SPLIT)
         glUniform1f(self._bars_uniforms["uYellowSplit"], YELLOW_SPLIT)
+        glUniform1f(self._bars_uniforms["uBarsAlpha"], float(self._bars_alpha))
         glBindVertexArray(self._bars_vao)
         glDrawArraysInstanced(GL_TRIANGLES, 0, 6, num_bars)
         glBindVertexArray(0)
@@ -523,6 +527,10 @@ class EqualizerOpenGLThread(threading.Thread):
         elif message_type == 'set_alpha':
             # L'alpha è una uniform dello shader di sfondo: basta memorizzarla.
             self._bg_alpha = message['value']
+
+        elif message_type == 'set_bars_alpha':
+            # L'opacità delle barre è una uniform dello shader delle barre.
+            self._bars_alpha = message['value']
 
         elif message_type == 'set_image':
             # L'immagine sostituisce il video: ferma l'eventuale riproduzione.
