@@ -16,6 +16,6 @@ dependencies = [
     "CTkMessagebox",
     "Pillow",
     "PyOpenGL",
-    "PyOpenGL-accelerate==3.1.9a2",
+    "PyOpenGL-accelerate",
     "glfw",
 ]
