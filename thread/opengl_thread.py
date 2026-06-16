@@ -34,6 +34,10 @@ RELEASE_TAU = 0.220     # s: discesa morbida → falloff leggibile in stile peak
 # Compensazione spettrale opzionale (0 = off). +3.0 ≈ tilt "pink" (+3 dB/ottava).
 TILT_DB_PER_OCT = 0.0
 
+# --- Colore barre (Blocco 1). Default usati solo nelle modalità tinta/gradiente. ---
+DEFAULT_COLOR_A = (0.231, 0.420, 1.0)   # blu  (#3b6bff): tinta / base gradiente
+DEFAULT_COLOR_B = (1.0, 0.231, 0.816)   # magenta (#ff3bd0): cima gradiente
+
 # --- Aspetto delle barre (ex magic number) ---
 BAR_WIDTH_FRAC = 0.8    # frazione dello slot occupata dalla barra (il resto è spazio)
 GREEN_SPLIT = 0.5       # sotto questa frazione d'altezza finestra → verde
@@ -69,13 +73,24 @@ layout(location = 0) in vec2 aUnitPos;   // quad unitario: x,y in [0,1]
 layout(location = 1) in float aHeight;   // altezza normalizzata per-istanza [0,1]
 uniform float uNumBars;
 uniform float uBarWidthFrac;
-out float vFill;                          // frazione di altezza finestra del frammento
+uniform float uMirror;       // 0 = dal basso, 1 = specchiato dal centro
+out float vAmp;     // frazione altezza-finestra dal basso (Classico)
+out float vBarY;    // frazione lungo la barra [0,1] (Gradiente / cap)
+out float vBarX;    // frazione sulla larghezza [0,1] (cap arrotondato)
+out float vBarT;    // indice barra normalizzato [0,1] (Spettro)
+out float vBarH;    // altezza barra normalizzata (cap arrotondato)
 void main() {
     float slot = 1.0 / uNumBars;
     float xLeft = (float(gl_InstanceID) + 0.5 * (1.0 - uBarWidthFrac)) * slot;
     float x = xLeft + aUnitPos.x * (slot * uBarWidthFrac);
-    float y = aUnitPos.y * aHeight;
-    vFill = y;
+    float yBottom = aUnitPos.y * aHeight;
+    float yCenter = 0.5 + (aUnitPos.y - 0.5) * aHeight;
+    float y = mix(yBottom, yCenter, uMirror);
+    vAmp = yBottom;
+    vBarY = aUnitPos.y;
+    vBarX = aUnitPos.x;
+    vBarT = (uNumBars > 1.0) ? float(gl_InstanceID) / (uNumBars - 1.0) : 0.0;
+    vBarH = aHeight;
     gl_Position = vec4(x * 2.0 - 1.0, y * 2.0 - 1.0, 0.0, 1.0);
 }
 """
@@ -84,16 +99,36 @@ void main() {
 # tagli usati dalla pipeline fissa precedente, ma netto al pixel).
 _BARS_FRAGMENT_SRC = """
 #version 330 core
-in float vFill;
+in float vAmp;
+in float vBarY;
+in float vBarT;
 out vec4 FragColor;
+uniform int uColorMode;       // 0 classico, 1 tinta, 2 gradiente, 3 spettro
+uniform vec3 uColorA;         // tinta / base gradiente
+uniform vec3 uColorB;         // cima gradiente
 uniform float uGreenSplit;
 uniform float uYellowSplit;
 uniform float uBarsAlpha;
+
+vec3 hsv2rgb(vec3 c) {
+    vec4 K = vec4(1.0, 2.0 / 3.0, 1.0 / 3.0, 3.0);
+    vec3 p = abs(fract(c.xxx + K.xyz) * 6.0 - K.www);
+    return c.z * mix(K.xxx, clamp(p - K.xxx, 0.0, 1.0), c.y);
+}
+
 void main() {
     vec3 col;
-    if (vFill < uGreenSplit)        col = vec3(0.0, 1.0, 0.0);
-    else if (vFill < uYellowSplit)  col = vec3(1.0, 1.0, 0.0);
-    else                            col = vec3(1.0, 0.0, 0.0);
+    if (uColorMode == 0) {                 // Classico: livello assoluto
+        if (vAmp < uGreenSplit)            col = vec3(0.0, 1.0, 0.0);
+        else if (vAmp < uYellowSplit)      col = vec3(1.0, 1.0, 0.0);
+        else                               col = vec3(1.0, 0.0, 0.0);
+    } else if (uColorMode == 1) {          // Tinta unica
+        col = uColorA;
+    } else if (uColorMode == 2) {          // Gradiente lungo la barra
+        col = mix(uColorA, uColorB, vBarY);
+    } else {                               // Spettro per frequenza
+        col = hsv2rgb(vec3(vBarT * 0.83, 0.9, 1.0));
+    }
     FragColor = vec4(col, uBarsAlpha);
 }
 """
@@ -168,6 +203,11 @@ class EqualizerOpenGLThread(threading.Thread):
                  attack_tau: float = ATTACK_TAU,
                  release_tau: float = RELEASE_TAU,
                  tilt_db_per_oct: float = TILT_DB_PER_OCT,
+                 color_mode: int = 0,
+                 color_a: tuple = DEFAULT_COLOR_A,
+                 color_b: tuple = DEFAULT_COLOR_B,
+                 green_split: float = GREEN_SPLIT,
+                 yellow_split: float = YELLOW_SPLIT,
                  window_close_callback: Callable = None):
         super().__init__()
         self._audio_queue = audio_queue
@@ -189,6 +229,13 @@ class EqualizerOpenGLThread(threading.Thread):
         self._attack_tau = attack_tau
         self._release_tau = release_tau
         self._tilt_db_per_oct = tilt_db_per_oct
+
+        # --- Stato colore barre (Blocco 1). Default = look classico attuale. ---
+        self._color_mode = int(color_mode)
+        self._color_a = tuple(color_a)
+        self._color_b = tuple(color_b)
+        self._green_split = float(green_split)
+        self._yellow_split = float(yellow_split)
 
         # Oggetti OpenGL (creati in init_gl_objects una volta attivo il contesto)
         self._bars_program = None
@@ -384,7 +431,8 @@ class EqualizerOpenGLThread(threading.Thread):
         )
         self._bars_uniforms = {
             name: glGetUniformLocation(self._bars_program, name)
-            for name in ("uNumBars", "uBarWidthFrac", "uGreenSplit", "uYellowSplit", "uBarsAlpha")
+            for name in ("uNumBars", "uBarWidthFrac", "uGreenSplit", "uYellowSplit",
+                         "uBarsAlpha", "uMirror", "uColorMode", "uColorA", "uColorB")
         }
         self._bg_uniforms = {
             name: glGetUniformLocation(self._bg_program, name)
@@ -498,9 +546,12 @@ class EqualizerOpenGLThread(threading.Thread):
         glUseProgram(self._bars_program)
         glUniform1f(self._bars_uniforms["uNumBars"], float(num_bars))
         glUniform1f(self._bars_uniforms["uBarWidthFrac"], BAR_WIDTH_FRAC)
-        glUniform1f(self._bars_uniforms["uGreenSplit"], GREEN_SPLIT)
-        glUniform1f(self._bars_uniforms["uYellowSplit"], YELLOW_SPLIT)
+        glUniform1f(self._bars_uniforms["uGreenSplit"], self._green_split)
+        glUniform1f(self._bars_uniforms["uYellowSplit"], self._yellow_split)
         glUniform1f(self._bars_uniforms["uBarsAlpha"], float(self._bars_alpha))
+        glUniform1i(self._bars_uniforms["uColorMode"], int(self._color_mode))
+        glUniform3f(self._bars_uniforms["uColorA"], *self._color_a)
+        glUniform3f(self._bars_uniforms["uColorB"], *self._color_b)
         glBindVertexArray(self._bars_vao)
         glDrawArraysInstanced(GL_TRIANGLES, 0, 6, num_bars)
         glBindVertexArray(0)
