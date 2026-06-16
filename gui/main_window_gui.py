@@ -17,15 +17,22 @@ from gui.optionmenu_frame import OptionMenuCustomFrame
 from gui.background_filepicker_frame import BackgroundFilepickerFrame
 from gui.help_window import HelpWindow
 from gui.animated_button import AnimatedButton
-from gui.processes_number_frame import ProcessesNumberFrame
+from gui.theme import (
+    FONT_TITLE, FONT_BUTTON, FONT_LABEL, FONT_BODY,
+    COLOR_NEUTRAL, COLOR_NEUTRAL_HOVER,
+    COLOR_FULLSCREEN, COLOR_FULLSCREEN_HOVER,
+    COLOR_START, COLOR_START_HOVER,
+    COLOR_STOP, COLOR_STOP_HOVER,
+    COLOR_LISTBOX_DARK, COLOR_LISTBOX_LIGHT,
+)
 from resource_manager import ResourceManager
 
 # Coda audio volutamente piccola: il renderer svuota tutta la coda a ogni frame
 # tenendo solo l'audio più recente, quindi una coda corta evita backlog/latenza.
 MAX_QUEUE_SIZE = 8
 INITIAL_FREQUENCIES_BANDS = 9
-SINGLE_LEFT_MOUSE_BOTTON_CLICK = '<Button-1>'
-DOUBLE_LEFT_MOUSE_BOTTON_CLICK = '<Double-Button-1>'
+RESIZE_DEBOUNCE_MS = 500
+DOUBLE_LEFT_MOUSE_BUTTON_CLICK = '<Double-Button-1>'
 CLOSE_WINDOW_EVENT = 'WM_DELETE_WINDOW'
 CONFIGURE_EVENT = '<Configure>'
 
@@ -40,104 +47,99 @@ class AudioCaptureGUI(ctk.CTk):
         ctk.set_appearance_mode('System')
         ctk.set_default_color_theme('blue')
 
-        self.devices = []
-
-        #Initialize the canvas size to none
-        self.canvas_width = self.canvas_height = None
-        self.bg_alpha = 0.5
-
-        # Create the resource manager
         self.resource_manager = ResourceManager()
-
-        # Create main window title
         self.title("Sound wave")
         self.minsize(800, 600)
-
         self.protocol(CLOSE_WINDOW_EVENT, self.on_close)
 
-        # create left frame
+        # Stato condiviso inizializzato prima della costruzione dei widget
+        self.devices = []
+        self.canvas_width = self.canvas_height = None
+        self.bg_alpha = 0.5
+        self.selected_monitor = None
+        self.available_monitors = self.get_available_monitors()
+
+        # Pannello sinistro: selezione device + impostazioni
         left_frame = ctk.CTkFrame(self, border_width=2)
         left_frame.pack(side=ctk.LEFT, padx=10, pady=10, fill=ctk.BOTH)
+        self._build_device_panel(left_frame)
 
-        # Create device frame
-        device_frame = ctk.CTkFrame(left_frame)
+        settings_label = ctk.CTkLabel(left_frame, text="Impostazioni", font=FONT_TITLE)
+        settings_label.pack(side=tk.TOP, padx=5, pady=5)
+        self._build_settings_tabs(left_frame)
+
+        # Pannello destro: canvas dell'equalizzatore + pulsanti
+        right_frame = ctk.CTkFrame(self, border_width=2)
+        right_frame.pack(side=ctk.RIGHT, padx=10, pady=10, fill=tk.BOTH, expand=True)
+
+        equalizer_frame = ctk.CTkFrame(right_frame, border_width=2)
+        equalizer_frame.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
+        self._build_canvas(equalizer_frame)
+
+        buttons_frame = ctk.CTkFrame(right_frame)
+        buttons_frame.pack(side=tk.BOTTOM, fill=tk.X)
+        self._build_action_buttons(buttons_frame)
+
+        # Ricalcola lo sfondo quando la finestra viene ridimensionata
+        on_resize_widget = {'equalizer_canvas': self.equalizer_canvas}
+        self.bind(CONFIGURE_EVENT, lambda event: self.on_resize(event, on_resize_widget))
+
+        self._init_runtime_state()
+
+    def _build_device_panel(self, parent):
+        """
+        Costruisce il pannello di selezione del device audio (label + listbox).
+        """
+        device_frame = ctk.CTkFrame(parent)
         device_frame.pack(padx=5, pady=5, anchor='n', fill=ctk.X)
-        ctk.CTkLabel(device_frame, text="Select device:", font=("Roboto", 14)).pack(pady=5)
+        ctk.CTkLabel(device_frame, text="Select device:", font=FONT_LABEL).pack(pady=5)
 
-        # Create the listbox frame
         device_listbox_frame = ctk.CTkFrame(device_frame)
         device_listbox_frame.pack(fill=ctk.BOTH, expand=True)
 
-        self.device_listbox = tk.Listbox(device_listbox_frame, width=40, font=("Roboto", 12), bg="#5a5a5a")
+        self.device_listbox = tk.Listbox(device_listbox_frame, width=40, font=FONT_BODY, bg=COLOR_LISTBOX_DARK)
         self.device_listbox.pack(side=ctk.LEFT, fill=ctk.BOTH, expand=True)
         scrollbar = ctk.CTkScrollbar(device_listbox_frame, orientation="vertical", command=self.device_listbox.yview)
         scrollbar.pack(side=ctk.LEFT)
         self.device_listbox.config(yscrollcommand=scrollbar.set)
-        
-        # Start the coroutine to retrieve the devices list
+
+        # Popola la lista dei device
         asyncio.run(self.load_devices())
 
-        self.device_listbox.bind(DOUBLE_LEFT_MOUSE_BOTTON_CLICK, self.on_device_selected)
+        self.device_listbox.bind(DOUBLE_LEFT_MOUSE_BUTTON_CLICK, self.on_device_selected)
 
-        # Create settings frame
-        # Inizializza le variabili necessarie prima di creare i tabs
-        self.bg_alpha = 0.5
-        self.bg_filename = None
-        self.selected_monitor = None
-        self.available_monitors = self.get_available_monitors()
+    def _build_canvas(self, parent):
+        """
+        Costruisce il canvas dell'equalizzatore e carica l'immagine di sfondo.
+        """
+        self.equalizer_canvas = ctk.CTkCanvas(parent, bg='#000')
 
-        # Create settings tabs invece del settings frame
-        settings_label = ctk.CTkLabel(left_frame, text="Impostazioni", font=("Roboto", 18, "bold"))
-        settings_label.pack(side=tk.TOP, padx=5, pady=5)
-
-        # Crea il sistema a tabs
-        self.settings_tabs = self.create_settings_tabs(left_frame)
-
-        # Create right frame
-        right_frame = ctk.CTkFrame(self, border_width=2)
-        right_frame.pack(side=ctk.RIGHT, padx=10, pady=10, fill=tk.BOTH, expand=True)
-
-        # Create equalizer frame and put it into the right frame
-        equalizer_frame = ctk.CTkFrame(right_frame, border_width=2)
-        equalizer_frame.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
-        
-        # Create equalizer canvas and put into equalizer_frame
-        self.equalizer_canvas = ctk.CTkCanvas(equalizer_frame, bg='#000')
-
-        # load canvas bg image
+        # Carica l'immagine di sfondo del canvas
         self.bg_img = Image.open(self.resource_manager.get_image_path('bg (19).png', 'bg'))
         self.bg_img_used = self.bg_img.copy()
         self.bg_img_used.putalpha(int(255 * self.bg_alpha))
 
-        # Chech image size to understand if it must be resized
+        # Ridimensiona l'immagine se il canvas è più grande dell'immagine
         self.canvas_width, self.canvas_height = self.get_canvas_size()
-
         if self.canvas_height > self.bg_img_used.height or self.canvas_width > self.bg_img_used.width:
-            # Resize the image using the resize() method
             self.bg_img_used = self.bg_img_used.resize((self.canvas_width, self.canvas_height), reducing_gap=2.0)
 
         self.canvas_image = ImageTk.PhotoImage(self.bg_img_used)
-
         self.equalizer_canvas.create_image(0, 0, anchor=tk.NW, image=self.canvas_image, tags='background')
         self.equalizer_canvas.tag_lower('background')
         self.equalizer_canvas.pack(fill=tk.BOTH, expand=True)
 
-        # Create buttons frame and put into right frame
-        buttons_frame = ctk.CTkFrame(right_frame)
-        buttons_frame.pack(side=tk.BOTTOM, fill=tk.X)
-
-        # controls the state of the start/stop button.
-        self.is_on_start = True
-
-        # Create start/stop button
-        # Create start/stop button animato
+    def _build_action_buttons(self, parent):
+        """
+        Costruisce i pulsanti animati Start/Stop, Fullscreen e Help.
+        """
         self.start_stop_button = AnimatedButton(
-            buttons_frame,
-            text="Start",  # Testo iniziale
+            parent,
+            text="Start",
             command=self.start_stop_capture,
-            font=("Roboto", 16),
-            fg_color='#6c757d',  # Grigio per stato disabilitato
-            hover_color='#5a6268',
+            font=FONT_BUTTON,
+            fg_color=COLOR_NEUTRAL,  # Grigio per stato disabilitato
+            hover_color=COLOR_NEUTRAL_HOVER,
             state='disabled',
             corner_radius=10,
             height=45,
@@ -147,19 +149,18 @@ class AudioCaptureGUI(ctk.CTk):
         )
         self.start_stop_button.pack(padx=5, pady=5, fill=ctk.BOTH, side=tk.LEFT, expand=True)
 
-        # Fullscreen button animato
         self.fullscreen_icn = ctk.CTkImage(
             dark_image=Image.open(self.resource_manager.get_image_path('maximize.png', 'icons')),
             size=(20, 20)
         )
         self.fullscreen_btn = AnimatedButton(
-            buttons_frame,
+            parent,
             command=self.fullscreen_command,
             image=self.fullscreen_icn,
             text='Fullscreen',
-            font=("Roboto", 16),
-            fg_color='#17a2b8',  # Azzurro
-            hover_color='#138496',
+            font=FONT_BUTTON,
+            fg_color=COLOR_FULLSCREEN,
+            hover_color=COLOR_FULLSCREEN_HOVER,
             corner_radius=10,
             height=45,
             animation_duration=200,
@@ -168,19 +169,18 @@ class AudioCaptureGUI(ctk.CTk):
         )
         self.fullscreen_btn.pack(padx=5, pady=5, fill=ctk.BOTH, side=tk.LEFT, expand=True)
 
-        # Help button animato
         help_icn = ctk.CTkImage(
             dark_image=Image.open(self.resource_manager.get_image_path('help.png', 'icons')),
             size=(20, 20)
         )
         help_button = AnimatedButton(
-            buttons_frame,
+            parent,
             command=self.open_help_window,
             image=help_icn,
             text='Help',
-            font=("Roboto", 16),
-            fg_color='#6c757d',  # Grigio
-            hover_color='#5a6268',
+            font=FONT_BUTTON,
+            fg_color=COLOR_NEUTRAL,
+            hover_color=COLOR_NEUTRAL_HOVER,
             corner_radius=10,
             height=45,
             animation_duration=200,
@@ -189,12 +189,10 @@ class AudioCaptureGUI(ctk.CTk):
         )
         help_button.pack(padx=5, pady=5, fill=ctk.BOTH, side=tk.LEFT, expand=True)
 
-        # BIND THE EVENT
-        # Create a dictionary with all the widget to check in the on_resize callback
-        on_resize_widget = {'equalizer_canvas': self.equalizer_canvas}
-
-        self.bind(CONFIGURE_EVENT, lambda event: self.on_resize(event, on_resize_widget))
-
+    def _init_runtime_state(self):
+        """
+        Inizializza code, thread e flag usati a runtime.
+        """
         self.audio_queue = None
         self.equalizer_control_queue = queue.Queue()
         self.audio_thread = None
@@ -204,20 +202,6 @@ class AudioCaptureGUI(ctk.CTk):
         self.resize_scheduled = False
         self.help_window = None
         self.is_capturing = False
-
-    def debug_state(self):
-        """
-        Stampa lo stato corrente per debug.
-        """
-        print(f"""
-        === DEBUG STATE ===
-        is_capturing: {self.is_capturing}
-        audio_thread attivo: {self.audio_thread is not None and self.audio_thread.is_alive()}
-        canvas_thread attivo: {self.canvas_thread is not None and self.canvas_thread.is_alive()}
-        pulsante abilitato: {self.start_stop_button.cget('state') == 'normal'}
-        testo pulsante: {self.start_stop_button.cget('text')}
-        ==================
-        """)
 
     def get_canvas_size(self) -> tuple[int, int]:
         """
@@ -263,26 +247,28 @@ class AudioCaptureGUI(ctk.CTk):
                 icon="error"
             )
 
-    # gui/main_window_gui.py - aggiungi questo metodo alla classe AudioCaptureGUI
-
-    def create_settings_tabs(self, parent):
+    def _build_settings_tabs(self, parent):
         """
-        Crea un sistema a tab per organizzare meglio le impostazioni.
+        Crea il sistema a tab per organizzare le impostazioni.
 
         Args:
             parent: Il widget padre
-
-        Returns:
-            CTkTabview: Il widget tabview creato
         """
         tabview = ctk.CTkTabview(parent, border_width=2)
         tabview.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
 
-        # Tab Visualizzazione
+        self._build_visualization_tab(tabview)
+        self._build_audio_tab(tabview)
+
+    def _build_visualization_tab(self, tabview):
+        """
+        Tab Visualizzazione: tema, immagine di sfondo, trasparenza e
+        selettore del monitor per il fullscreen.
+        """
         tabview.add("🎨 Visualizzazione")
         vis_tab = tabview.tab("🎨 Visualizzazione")
 
-        # Appearance mode
+        # Tema
         self.appearance_mode = OptionMenuCustomFrame(
             vis_tab,
             header_name='Tema:',
@@ -292,7 +278,7 @@ class AudioCaptureGUI(ctk.CTk):
         )
         self.appearance_mode.pack(side=tk.TOP, padx=10, pady=5, fill=tk.X)
 
-        # Background settings
+        # Immagine di sfondo
         self.file_picker = BackgroundFilepickerFrame(
             vis_tab,
             header_name='Immagine di Sfondo:',
@@ -301,7 +287,7 @@ class AudioCaptureGUI(ctk.CTk):
         )
         self.file_picker.pack(side=tk.TOP, padx=10, pady=5, fill=tk.X)
 
-        # Alpha slider
+        # Trasparenza
         self.alpha_slider = SliderCustomFrame(
             vis_tab,
             header_name='Trasparenza:',
@@ -310,11 +296,25 @@ class AudioCaptureGUI(ctk.CTk):
         )
         self.alpha_slider.pack(side=tk.TOP, padx=10, pady=5, fill=tk.X)
 
-        # Tab Audio
+        # Selettore monitor per il fullscreen (solo con più monitor disponibili)
+        if len(self.available_monitors) > 1:
+            self.monitor_option = OptionMenuCustomFrame(
+                vis_tab,
+                header_name='Monitor Fullscreen:',
+                values=self.available_monitors,
+                initial_value=self.available_monitors[0],
+                command=self.change_selected_monitor
+            )
+            self.monitor_option.pack(side=tk.TOP, padx=10, pady=5, fill=tk.X)
+
+    def _build_audio_tab(self, tabview):
+        """
+        Tab Audio: soglia di rumore e numero di bande di frequenza.
+        """
         tabview.add("🎵 Audio")
         audio_tab = tabview.tab("🎵 Audio")
 
-        # Noise threshold
+        # Soglia rumore
         self.noise_slider = SliderCustomFrame(
             audio_tab,
             header_name='Soglia Rumore:',
@@ -322,7 +322,7 @@ class AudioCaptureGUI(ctk.CTk):
         )
         self.noise_slider.pack(side=tk.TOP, padx=10, pady=5, fill=tk.X)
 
-        # Frequency bands
+        # Bande di frequenza
         self.frequency_slider = SliderCustomFrame(
             audio_tab,
             header_name='Bande di Frequenza:',
@@ -337,40 +337,13 @@ class AudioCaptureGUI(ctk.CTk):
         )
         self.frequency_slider.pack(side=tk.TOP, padx=10, pady=5, fill=tk.X)
 
-        # Tab Performance
-        tabview.add("⚡ Performance")
-        perf_tab = tabview.tab("⚡ Performance")
-
-        # Processors
-        self.processors_number_frame = ProcessesNumberFrame(
-            perf_tab,
-            max_value=5,
-            initial_value=1,
-            command=self.update_workers_number,
-            auto_callback=self.update_auto_workers
-        )
-        self.processors_number_frame.pack(side=tk.TOP, padx=10, pady=5, fill=tk.X)
-
-        # Monitor selection (solo se ci sono più monitor)
-        if len(self.available_monitors) > 1:
-            self.monitor_option = OptionMenuCustomFrame(
-                perf_tab,
-                header_name='Monitor Fullscreen:',
-                values=self.available_monitors,
-                initial_value=self.available_monitors[0],
-                command=self.change_selected_monitor
-            )
-            self.monitor_option.pack(side=tk.TOP, padx=10, pady=5, fill=tk.X)
-
-        return tabview
-
     def apply_background(self):
         self.equalizer_canvas.update_idletasks()
         self.canvas_width, self.canvas_height = self.equalizer_canvas.winfo_width(), self.equalizer_canvas.winfo_height()
         if self.canvas_height != self.bg_img_used.height or self.canvas_width != self.bg_img_used.width:
             # Resize the image using the resize() method
             self.bg_img_used = self.bg_img_used.resize((self.canvas_width, self.canvas_height), reducing_gap=2.0)
-        
+
         self.canvas_image = ImageTk.PhotoImage(self.bg_img_used)
         self.equalizer_canvas.create_image(0, 0, anchor=ctk.NW, image=self.canvas_image, tags='background')
         self.equalizer_canvas.tag_lower('background')
@@ -380,7 +353,7 @@ class AudioCaptureGUI(ctk.CTk):
             loop = asyncio.get_event_loop()
             devices = await loop.run_in_executor(executor, sc.all_microphones, True)
         return devices
-    
+
     async def load_devices(self):
         self.devices = await self.get_devices()
         for device in self.devices:
@@ -398,7 +371,7 @@ class AudioCaptureGUI(ctk.CTk):
 
         return monitors_name
 
-    def on_device_selected(self, event):  # Nota: event invece di _
+    def on_device_selected(self, event):
         """
         Quando un device è selezionato, abilita il pulsante start/stop.
         """
@@ -427,8 +400,8 @@ class AudioCaptureGUI(ctk.CTk):
                 # Abilita il pulsante e imposta il colore verde
                 self.start_stop_button.configure(state='normal')
                 self.start_stop_button.update_base_colors(
-                    fg_color='#28a745',  # Verde
-                    hover_color='#218838'
+                    fg_color=COLOR_START,
+                    hover_color=COLOR_START_HOVER
                 )
                 self.start_stop_button.configure(text="Start")
 
@@ -476,22 +449,6 @@ class AudioCaptureGUI(ctk.CTk):
             }
             self.equalizer_control_queue.put(message)
 
-    def update_workers_number(self, value):
-        if self.equalizer_opengl_thread:
-            message = {
-                "type": "set_workers",
-                "value": value
-            }
-            self.equalizer_control_queue.put(message)
-
-    def update_auto_workers(self, value):
-        if self.equalizer_opengl_thread:
-            message = {
-                "type": "set_auto_workers",
-                "value": value
-            }
-            self.equalizer_control_queue.put(message)
-
     def update_alpha(self, value):
         self.bg_alpha = value
         self.bg_img_used.putalpha(int(255 * self.bg_alpha))
@@ -509,9 +466,9 @@ class AudioCaptureGUI(ctk.CTk):
         ctk.set_appearance_mode(new_appearance_mode)
 
         if ctk.get_appearance_mode().lower() == 'dark':
-            self.device_listbox.configure(bg="#5a5a5a")
+            self.device_listbox.configure(bg=COLOR_LISTBOX_DARK)
         else:
-            self.device_listbox.configure(bg='#fff')
+            self.device_listbox.configure(bg=COLOR_LISTBOX_LIGHT)
 
     def change_selected_monitor(self, selected_monitor_name: str) -> None:
         self.selected_monitor = selected_monitor_name
@@ -520,9 +477,6 @@ class AudioCaptureGUI(ctk.CTk):
         """
         Start the equalizer thread when the start button is pressed
         """
-        print(f"start_capture: canvas_thread = {self.canvas_thread}")
-        print(f"start_capture: audio_thread attivo = {self.audio_thread and self.audio_thread.is_alive()}")
-
         if not self.canvas_thread:
             if self.audio_thread and self.audio_thread.is_alive():
                 try:
@@ -534,15 +488,10 @@ class AudioCaptureGUI(ctk.CTk):
                         canvas=self.equalizer_canvas,
                         control_queue=self.equalizer_control_queue)
                     self.canvas_thread.start()
-                    print("Thread equalizer creato e avviato")
-                except Exception as e:
-                    print(f"Errore nella creazione del thread: {e}")
+                except Exception:
                     self.canvas_thread = None
             else:
-                print("Audio thread non attivo!")
                 self.show_no_audio_thread_warning()
-        else:
-            print("Canvas thread già esistente!")
 
     def stop_capture(self):
         """
@@ -572,7 +521,6 @@ class AudioCaptureGUI(ctk.CTk):
 
         # Verifica che la coda audio sia valida
         if not self.audio_queue:
-            print("ERRORE: audio_queue non valida!")
             return
 
         if not self.is_capturing:
@@ -580,26 +528,23 @@ class AudioCaptureGUI(ctk.CTk):
             while not self.audio_queue.empty():
                 try:
                     self.audio_queue.get_nowait()
-                except:
+                except queue.Empty:
                     break
 
             # Avvia la cattura
-            print(f"Avvio cattura... Dimensione coda: {self.audio_queue.qsize()}")
             self.start_capture()
             # Verifica che sia partito correttamente prima di cambiare stato
             self.after(100, self._check_capture_started)
         else:
             # Ferma la cattura
-            print("Arresto cattura...")
             self.stop_capture()
             self.is_capturing = False
             # Aggiorna pulsante a verde
             self.start_stop_button.update_base_colors(
-                fg_color='#28a745',
-                hover_color='#218838'
+                fg_color=COLOR_START,
+                hover_color=COLOR_START_HOVER
             )
             self.start_stop_button.configure(text="Start")
-            print("Cattura arrestata")
 
     def _check_capture_started(self):
         """
@@ -609,13 +554,11 @@ class AudioCaptureGUI(ctk.CTk):
             self.is_capturing = True
             # Aggiorna pulsante a rosso
             self.start_stop_button.update_base_colors(
-                fg_color='#dc3545',
-                hover_color='#c82333'
+                fg_color=COLOR_STOP,
+                hover_color=COLOR_STOP_HOVER
             )
             self.start_stop_button.configure(text="Stop")
-            print("Cattura avviata con successo")
         else:
-            print("Errore: thread non avviato")
             self.is_capturing = False
 
     def fullscreen_command(self):
@@ -627,8 +570,8 @@ class AudioCaptureGUI(ctk.CTk):
             self.stop_capture()
             self.is_capturing = False
             self.start_stop_button.update_base_colors(
-                fg_color='#28a745',
-                hover_color='#218838'
+                fg_color=COLOR_START,
+                hover_color=COLOR_START_HOVER
             )
             self.start_stop_button.configure(text="Start")
 
@@ -646,9 +589,7 @@ class AudioCaptureGUI(ctk.CTk):
                     control_queue=self.equalizer_control_queue,
                     bg_image=self.bg_img,
                     monitor=self.selected_monitor,
-                    window_close_callback=self.opengl_window_closed,
-                    workers=self.processors_number_frame.get_value(),
-                    auto_workers=self.processors_number_frame.is_auto()
+                    window_close_callback=self.opengl_window_closed
                 )
                 self.equalizer_opengl_thread.start()
         else:
@@ -673,7 +614,7 @@ class AudioCaptureGUI(ctk.CTk):
             if widget_name == 'equalizer_canvas':
                 if not self.resize_scheduled:
                     self.resize_scheduled = True
-                    self.after(500, self.resize_background, widget)
+                    self.after(RESIZE_DEBOUNCE_MS, self.resize_background, widget)
 
     def resize_background(self, canvas: tk.Canvas):
         self.canvas_width, self.canvas_height = canvas.winfo_width(), canvas.winfo_height()

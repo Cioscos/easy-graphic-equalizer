@@ -1,6 +1,6 @@
 from typing import Callable, Optional
+from tkinter import filedialog
 
-import tkinter as tk
 import customtkinter as ctk
 
 
@@ -37,10 +37,10 @@ class BackgroundFilepickerFrame(ctk.CTkFrame):
         self.apply_button.grid(row=2, column=0, columnspan=2, sticky="EW", padx=5, pady=5)
 
     def open_file_dialog(self) -> None:
-        self._filename = tk.filedialog.askopenfilename(initialdir = "./resources/bg", title = "Select a File", filetypes = (("Image files", "*.png;*.jpg;*.jpeg;*.gif"), ("all files", "*.*")))
+        self._filename = filedialog.askopenfilename(initialdir = "./resources/bg", title = "Select a File", filetypes = (("Image files", "*.png;*.jpg;*.jpeg;*.gif"), ("all files", "*.*")))
         if self._filename:
             self.image_path_entry.delete(0, ctk.END)
             self.image_path_entry.insert(0, self._filename)
 
-    def get_filename(self) -> str:
+    def get_filename(self) -> Optional[str]:
         return self._filename
