@@ -2,7 +2,7 @@
 
 Un equalizzatore grafico audio in tempo reale con interfaccia moderna e visualizzazione fullscreen ad alte prestazioni.
 
-![Python](https://img.shields.io/badge/python-v3.8+-blue.svg)
+![Python](https://img.shields.io/badge/python-v3.12+-blue.svg)
 ![Platform](https://img.shields.io/badge/platform-windows%20%7C%20linux%20%7C%20macos-lightgrey)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
@@ -41,14 +41,16 @@ Visualizzazione immersiva a schermo intero con rendering OpenGL ad alte prestazi
 
 ### Requisiti di Sistema
 
-- **Python**: 3.8 o superiore
+- **Python**: 3.12 o superiore
 - **Sistema Operativo**: Windows, macOS, Linux
 - **Hardware**: Scheda audio con driver compatibili
 
 ### Dipendenze
 
+Il progetto è gestito con [uv](https://docs.astral.sh/uv/). Installa uv, poi sincronizza l'ambiente (uv legge `pyproject.toml` e il `uv.lock` pinnato):
+
 ```bash
-pip install -r requirements.txt
+uv sync
 ```
 
 Le dipendenze principali includono:
@@ -69,12 +71,12 @@ Le dipendenze principali includono:
 
 2. **Installa le dipendenze**:
    ```bash
-   pip install -r requirements.txt
+   uv sync
    ```
 
 3. **Avvia l'applicazione**:
    ```bash
-   python main.py
+   uv run python main.py
    ```
 
 ## 🚀 Utilizzo
@@ -144,7 +146,8 @@ Per migliori risultati:
 ```
 sound-wave/
 ├── main.py                          # Entry point dell'applicazione
-├── requirements.txt                 # Dipendenze Python
+├── pyproject.toml                   # Metadati progetto e dipendenze (uv)
+├── uv.lock                          # Lockfile delle dipendenze (uv)
 ├── resource_manager.py              # Gestione risorse (immagini, assets)
 │
 ├── gui/                            # Interfaccia utente
