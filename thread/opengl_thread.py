@@ -102,13 +102,19 @@ _BARS_FRAGMENT_SRC = """
 in float vAmp;
 in float vBarY;
 in float vBarT;
+in float vBarX;
+in float vBarH;
 out vec4 FragColor;
-uniform int uColorMode;       // 0 classico, 1 tinta, 2 gradiente, 3 spettro
-uniform vec3 uColorA;         // tinta / base gradiente
-uniform vec3 uColorB;         // cima gradiente
+uniform int uColorMode;
+uniform vec3 uColorA;
+uniform vec3 uColorB;
 uniform float uGreenSplit;
 uniform float uYellowSplit;
 uniform float uBarsAlpha;
+uniform float uRounded;       // 0/1: cima arrotondata
+uniform float uNumBars;
+uniform float uBarWidthFrac;
+uniform vec2 uViewportPx;     // dimensione framebuffer in pixel
 
 vec3 hsv2rgb(vec3 c) {
     vec4 K = vec4(1.0, 2.0 / 3.0, 1.0 / 3.0, 3.0);
@@ -118,18 +124,34 @@ vec3 hsv2rgb(vec3 c) {
 
 void main() {
     vec3 col;
-    if (uColorMode == 0) {                 // Classico: livello assoluto
+    if (uColorMode == 0) {
         if (vAmp < uGreenSplit)            col = vec3(0.0, 1.0, 0.0);
         else if (vAmp < uYellowSplit)      col = vec3(1.0, 1.0, 0.0);
         else                               col = vec3(1.0, 0.0, 0.0);
-    } else if (uColorMode == 1) {          // Tinta unica
+    } else if (uColorMode == 1) {
         col = uColorA;
-    } else if (uColorMode == 2) {          // Gradiente lungo la barra
+    } else if (uColorMode == 2) {
         col = mix(uColorA, uColorB, vBarY);
-    } else {                               // Spettro per frequenza
+    } else {
         col = hsv2rgb(vec3(vBarT * 0.83, 0.9, 1.0));
     }
-    FragColor = vec4(col, uBarsAlpha);
+
+    float a = uBarsAlpha;
+    if (uRounded > 0.5) {
+        // Cappuccio semicircolare alla cima, corretto per aspect ratio.
+        float wpx = (1.0 / uNumBars) * uBarWidthFrac * uViewportPx.x;  // larghezza barra (px)
+        float hpx = max(vBarH * uViewportPx.y, 1.0);                   // altezza barra (px)
+        float r = 0.5 * wpx;
+        float dyTop = (1.0 - vBarY) * hpx;        // px sotto la cima (0 = cima)
+        if (dyTop < r) {
+            float dx = (vBarX - 0.5) * wpx;       // offset orizzontale dal centro (px)
+            float dyc = r - dyTop;                // offset verticale dal centro del cappuccio
+            float dist = sqrt(dx * dx + dyc * dyc);
+            float aa = max(fwidth(dist), 1e-3);
+            a *= 1.0 - smoothstep(r - aa, r + aa, dist);
+        }
+    }
+    FragColor = vec4(col, a);
 }
 """
 
@@ -208,6 +230,10 @@ class EqualizerOpenGLThread(threading.Thread):
                  color_b: tuple = DEFAULT_COLOR_B,
                  green_split: float = GREEN_SPLIT,
                  yellow_split: float = YELLOW_SPLIT,
+                 bar_width: float = BAR_WIDTH_FRAC,
+                 rounded: bool = False,
+                 mirror: bool = False,
+                 band_order_symmetric: bool = False,
                  window_close_callback: Callable = None):
         super().__init__()
         self._audio_queue = audio_queue
@@ -236,6 +262,15 @@ class EqualizerOpenGLThread(threading.Thread):
         self._color_b = tuple(color_b)
         self._green_split = float(green_split)
         self._yellow_split = float(yellow_split)
+
+        # --- Stato forma/disposizione barre (Blocco 1). Default = look attuale. ---
+        self._bar_width_frac = float(bar_width)
+        self._rounded = bool(rounded)
+        self._mirror = bool(mirror)
+        self._band_order_symmetric = bool(band_order_symmetric)
+        # Dimensione framebuffer (px), serve al cap arrotondato; reale in run().
+        self._fb_width = 1.0
+        self._fb_height = 1.0
 
         # Oggetti OpenGL (creati in init_gl_objects una volta attivo il contesto)
         self._bars_program = None
@@ -432,7 +467,8 @@ class EqualizerOpenGLThread(threading.Thread):
         self._bars_uniforms = {
             name: glGetUniformLocation(self._bars_program, name)
             for name in ("uNumBars", "uBarWidthFrac", "uGreenSplit", "uYellowSplit",
-                         "uBarsAlpha", "uMirror", "uColorMode", "uColorA", "uColorB")
+                         "uBarsAlpha", "uMirror", "uColorMode", "uColorA", "uColorB",
+                         "uRounded", "uViewportPx")
         }
         self._bg_uniforms = {
             name: glGetUniformLocation(self._bg_program, name)
@@ -545,13 +581,16 @@ class EqualizerOpenGLThread(threading.Thread):
 
         glUseProgram(self._bars_program)
         glUniform1f(self._bars_uniforms["uNumBars"], float(num_bars))
-        glUniform1f(self._bars_uniforms["uBarWidthFrac"], BAR_WIDTH_FRAC)
+        glUniform1f(self._bars_uniforms["uBarWidthFrac"], float(self._bar_width_frac))
         glUniform1f(self._bars_uniforms["uGreenSplit"], self._green_split)
         glUniform1f(self._bars_uniforms["uYellowSplit"], self._yellow_split)
         glUniform1f(self._bars_uniforms["uBarsAlpha"], float(self._bars_alpha))
         glUniform1i(self._bars_uniforms["uColorMode"], int(self._color_mode))
         glUniform3f(self._bars_uniforms["uColorA"], *self._color_a)
         glUniform3f(self._bars_uniforms["uColorB"], *self._color_b)
+        glUniform1f(self._bars_uniforms["uMirror"], 1.0 if self._mirror else 0.0)
+        glUniform1f(self._bars_uniforms["uRounded"], 1.0 if self._rounded else 0.0)
+        glUniform2f(self._bars_uniforms["uViewportPx"], float(self._fb_width), float(self._fb_height))
         glBindVertexArray(self._bars_vao)
         glDrawArraysInstanced(GL_TRIANGLES, 0, 6, num_bars)
         glBindVertexArray(0)
@@ -760,6 +799,7 @@ class EqualizerOpenGLThread(threading.Thread):
             # Viewport sulla dimensione reale del framebuffer (corretto anche su hi-DPI)
             fb_width, fb_height = glfw.get_framebuffer_size(window)
             glViewport(0, 0, fb_width, fb_height)
+            self._fb_width, self._fb_height = fb_width, fb_height
 
             # Enable blending
             glEnable(GL_BLEND)
