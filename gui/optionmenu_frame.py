@@ -1,46 +1,60 @@
 from typing import Callable, Optional
-import customtkinter as tk
 
-from gui.theme import FONT_BODY
+from PySide6.QtCore import Qt
+from PySide6.QtWidgets import QComboBox, QHBoxLayout, QLabel, QWidget
+
+from gui.theme import font_body
 
 
-class OptionMenuCustomFrame(tk.CTkFrame):
-    """
-    Custom class to wrap an optionmenu inside a frame
-    """
-    def __init__(self,
-                 *args,
-                 header_name: str = 'OptionMenuCustomFrame',
-                 values: Optional[list] = None,
-                 initial_value : Optional[str] = None,
-                 command: Optional[Callable] = None,
-                 **kwargs):
-        super().__init__(*args, **kwargs)
+class OptionMenuCustomFrame(QWidget):
+    """Wrappa un menu a tendina (QComboBox) con un'etichetta di intestazione."""
 
-        header = tk.CTkLabel(self, text=header_name)
-        header.pack(side=tk.LEFT, padx=10)
-
+    def __init__(
+        self,
+        parent=None,
+        *,
+        header_name: str = "OptionMenuCustomFrame",
+        values: Optional[list] = None,
+        initial_value: Optional[str] = None,
+        command: Optional[Callable] = None,
+    ):
+        super().__init__(parent)
 
         if not values:
-            values = ['--Select--']
+            values = ["--Select--"]
 
-        self._optionmenu_var = tk.StringVar(value=str(initial_value) if initial_value else str(values[0]))
-        self._option_menu = tk.CTkOptionMenu(self,
-                                            values=values,
-                                            command=command,
-                                            variable=self._optionmenu_var,
-                                            font=FONT_BODY,
-                                            dropdown_font=FONT_BODY)
-        self._option_menu.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(4, 2, 4, 2)
+
+        header = QLabel(header_name)
+        header.setFont(font_body())
+
+        self._combo = QComboBox()
+        self._combo.setFont(font_body())
+        self._combo.addItems([str(v) for v in values])
+
+        initial = str(initial_value) if initial_value is not None else str(values[0])
+        # Imposta il valore iniziale prima di collegare il segnale: evita che la
+        # callback venga invocata durante la costruzione.
+        idx = self._combo.findText(initial)
+        if idx >= 0:
+            self._combo.setCurrentIndex(idx)
+
+        layout.addWidget(header)
+        layout.addWidget(self._combo, 1)
+
+        self._command = command
+        if command is not None:
+            self._combo.currentTextChanged.connect(command)
 
     def get_value(self) -> str:
-        """
-        Returns the value of the option menu
-        """
-        return self._optionmenu_var.get()
-    
+        """Restituisce il valore corrente del menu."""
+        return self._combo.currentText()
+
     def set_value(self, value: str) -> None:
-        """
-        Set the value of the option menu
-        """
-        self._optionmenu_var.set(value)
+        """Imposta il valore del menu senza scatenare la callback."""
+        idx = self._combo.findText(str(value))
+        if idx >= 0:
+            self._combo.blockSignals(True)
+            self._combo.setCurrentIndex(idx)
+            self._combo.blockSignals(False)

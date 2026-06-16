@@ -1,46 +1,65 @@
+import os
 from typing import Callable, Optional
-from tkinter import filedialog
 
-import customtkinter as ctk
+from PySide6.QtWidgets import (
+    QFileDialog,
+    QGridLayout,
+    QLabel,
+    QLineEdit,
+    QPushButton,
+    QWidget,
+)
 
 
-class BackgroundFilepickerFrame(ctk.CTkFrame):
-    """
-    Custom class to wrap a file picker inside a frame
-    """
-    def __init__(self,
-                 *args,
-                 header_name: str = 'BackgroundFilepickerFrame',
-                 placeholder_text : Optional[str] = None,
-                 apply_command: Optional[Callable] = None,
-                 **kwargs):
-        super().__init__(*args, **kwargs)
+class BackgroundFilepickerFrame(QWidget):
+    """Wrappa un selettore di file (campo + sfoglia + applica) in un riquadro."""
 
-        self._filename = None
+    def __init__(
+        self,
+        parent=None,
+        *,
+        header_name: str = "BackgroundFilepickerFrame",
+        placeholder_text: Optional[str] = None,
+        apply_command: Optional[Callable] = None,
+    ):
+        super().__init__(parent)
 
-        self.columnconfigure(0, weight=2)
+        layout = QGridLayout(self)
+        layout.setContentsMargins(4, 4, 4, 4)
+        layout.setColumnStretch(0, 2)
 
-        # Create the label in the first row
-        self.label = ctk.CTkLabel(self, text=header_name)
-        self.label.grid(row=0, column=0, columnspan=2, sticky='N', padx=5, pady=5)
+        self.label = QLabel(header_name)
+        layout.addWidget(self.label, 0, 0, 1, 2)
 
-        # Create the entry in the second row
-        self.image_path_entry = ctk.CTkEntry(self, placeholder_text=placeholder_text if placeholder_text else '')
-        self.image_path_entry.grid(row=1, column=0, sticky="EW", padx=5, pady=5)
+        self.image_path_entry = QLineEdit()
+        if placeholder_text:
+            self.image_path_entry.setPlaceholderText(placeholder_text)
+        layout.addWidget(self.image_path_entry, 1, 0)
 
-        # Create the button next to the entry in the second row
-        self.file_picker_button = ctk.CTkButton(self, text='...', width=10, command=self.open_file_dialog)
-        self.file_picker_button.grid(row=1, column=1, sticky="E", padx=5, pady=5)
+        self.file_picker_button = QPushButton("...")
+        self.file_picker_button.setFixedWidth(40)
+        self.file_picker_button.clicked.connect(self.open_file_dialog)
+        layout.addWidget(self.file_picker_button, 1, 1)
 
-        # Create the apply button in the third row
-        self.apply_button = ctk.CTkButton(self, text='Apply', command=apply_command)
-        self.apply_button.grid(row=2, column=0, columnspan=2, sticky="EW", padx=5, pady=5)
+        self.apply_button = QPushButton("Apply")
+        if apply_command is not None:
+            self.apply_button.clicked.connect(lambda: apply_command())
+        layout.addWidget(self.apply_button, 2, 0, 1, 2)
 
     def open_file_dialog(self) -> None:
-        self._filename = filedialog.askopenfilename(initialdir = "./resources/bg", title = "Select a File", filetypes = (("Image files", "*.png;*.jpg;*.jpeg;*.gif"), ("Video files", "*.mp4;*.avi;*.mov;*.mkv"), ("all files", "*.*")))
-        if self._filename:
-            self.image_path_entry.delete(0, ctk.END)
-            self.image_path_entry.insert(0, self._filename)
+        start_dir = "resources/bg" if os.path.isdir("resources/bg") else ""
+        filename, _ = QFileDialog.getOpenFileName(
+            self,
+            "Select a File",
+            start_dir,
+            "Image files (*.png *.jpg *.jpeg *.gif);;"
+            "Video files (*.mp4 *.avi *.mov *.mkv);;"
+            "All files (*)",
+        )
+        if filename:
+            self.image_path_entry.setText(filename)
 
     def get_filename(self) -> Optional[str]:
-        return self._filename
+        """Restituisce il path corrente (digitato a mano o scelto dal dialog)."""
+        text = self.image_path_entry.text().strip()
+        return text or None

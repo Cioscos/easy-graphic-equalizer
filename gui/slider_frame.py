@@ -1,107 +1,116 @@
-from typing import Callable, Optional, Union
 from enum import Enum
+from typing import Callable, Optional, Union
 
-import customtkinter as tk
+from PySide6.QtCore import Qt
+from PySide6.QtWidgets import QHBoxLayout, QLabel, QSlider, QVBoxLayout, QWidget
 
-from gui.theme import FONT_BODY
+from gui.theme import font_body
+
+# Risoluzione interna per gli slider a virgola mobile senza un numero di step
+# esplicito: QSlider lavora solo su interi, quindi mappiamo [from_, to] su
+# [0, _DOUBLE_RESOLUTION].
+_DOUBLE_RESOLUTION = 1000
 
 
-class SliderCustomFrame(tk.CTkFrame):
-    """
-    Custom class to wrap an Slider inside a frame
-    """
+class SliderCustomFrame(QWidget):
+    """Wrappa uno slider con etichetta, valore corrente ed eventuale warning."""
+
     class ValueType(Enum):
-        INT = 'int'
-        DOUBLE = 'double'
+        INT = "int"
+        DOUBLE = "double"
 
-    def __init__(self,
-                 *args,
-                 header_name: str = 'SliderCustomFrame',
-                 initial_value: Union[float, int] = 0.1,
-                 from_: int = 0,
-                 to: int = 1,
-                 steps: Optional[int] = None,
-                 command: Optional[Callable] = None,
-                 warning_text: Optional[str] = None,
-                 warning_trigger_value: Optional[int] = None,
-                 value_type: ValueType = ValueType.DOUBLE,
-                 **kwargs):
-        super().__init__(*args, **kwargs)
+    def __init__(
+        self,
+        parent=None,
+        *,
+        header_name: str = "SliderCustomFrame",
+        initial_value: Union[float, int] = 0.1,
+        from_: float = 0,
+        to: float = 1,
+        steps: Optional[int] = None,
+        command: Optional[Callable] = None,
+        warning_text: Optional[str] = None,
+        warning_trigger_value: Optional[float] = None,
+        value_type: "SliderCustomFrame.ValueType" = ValueType.DOUBLE,
+    ):
+        super().__init__(parent)
 
         if warning_trigger_value and not warning_text:
-            raise Exception('No warning text with when warning_trigger_value set')
-        
+            raise ValueError("No warning text when warning_trigger_value set")
+
+        self._command = command
+        self._from = from_
+        self._to = to
         self._warning_trigger_value = warning_trigger_value
+        self._is_int = value_type == self.ValueType.INT
+        self._ticks = None if self._is_int else int(steps) if steps else _DOUBLE_RESOLUTION
 
-        if value_type == self.ValueType.INT:
-            self.slider_value = tk.IntVar()
-        elif value_type == self.ValueType.DOUBLE:
-            self.slider_value = tk.DoubleVar()
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(4, 2, 4, 2)
+        layout.setSpacing(2)
+
+        row = QHBoxLayout()
+        header = QLabel(header_name)
+        header.setFont(font_body())
+
+        self._slider = QSlider(Qt.Orientation.Horizontal)
+        if self._is_int:
+            self._slider.setMinimum(int(from_))
+            self._slider.setMaximum(int(to))
+            self._slider.setSingleStep(1)
+            self._slider.setValue(int(round(initial_value)))
         else:
-            raise Exception(f'No valid value passed to value_type. Use one of these values: {[type.value for type in self.ValueType]}')
-        
-        self.slider_value.set(value=initial_value)
+            self._slider.setMinimum(0)
+            self._slider.setMaximum(self._ticks)
+            self._slider.setValue(self._to_ticks(initial_value))
 
-        slider_frame = tk.CTkFrame(self)
-        slider_frame.pack(expand=True, fill=tk.X, pady=2)
+        self._value_label = QLabel()
+        self._value_label.setFont(font_body())
+        self._value_label.setMinimumWidth(36)
+        self._value_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
 
-        header = tk.CTkLabel(slider_frame, text=header_name)
-        header.pack(side=tk.LEFT, padx=10)
+        row.addWidget(header)
+        row.addWidget(self._slider, 1)
+        row.addWidget(self._value_label)
+        layout.addLayout(row)
 
-        slider = tk.CTkSlider(slider_frame,
-                 from_=from_,
-                 to=to,
-                 orientation=tk.HORIZONTAL,
-                 variable=self.slider_value,
-                 number_of_steps=steps,
-                 command=self._combine_funcs(command, self._update_value_text)
-                 )
-        slider.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        self.warning_label = QLabel(warning_text or "")
+        self.warning_label.setFont(font_body())
+        self.warning_label.setStyleSheet("color: yellow;")
+        self.warning_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(self.warning_label)
+        self.warning_label.setVisible(
+            bool(warning_trigger_value and self.get_value() >= warning_trigger_value)
+        )
 
-        self._value_text = tk.CTkLabel(slider_frame, text=str(self.slider_value.get()))
-        self._value_text.pack(side=tk.LEFT, expand=False, padx=5)
+        # Aggiorna l'etichetta iniziale *prima* di collegare il segnale, così la
+        # callback utente non viene invocata durante la costruzione.
+        self._refresh_value_label()
+        self._slider.valueChanged.connect(self._on_changed)
 
-        # Warning message
-        self.warning_label = tk.CTkLabel(self,
-                                text=warning_text,
-                                font=FONT_BODY,
-                                text_color='yellow',
-                                justify='center')
+    def _to_ticks(self, value: float) -> int:
+        span = self._to - self._from
+        if span == 0:
+            return 0
+        return int(round((value - self._from) / span * self._ticks))
 
-        # 'The number of the bard could be too high. Consider to use the fullscreen view'
-        if warning_trigger_value and self.slider_value.get() >= warning_trigger_value:
-            self.warning_label.pack()
+    def _from_ticks(self, ticks: int) -> float:
+        span = self._to - self._from
+        return self._from + (ticks / self._ticks) * span
 
-    def _combine_funcs(self, *funcs):
-        """
-        this function will call the passed functions
-        with the arguments that are passed to the functions
-        """
-        def inner_combined_func(*args, **kwargs):
-            for f in funcs:
-                # Calling functions with arguments, if any
-                f(*args, **kwargs)
-    
-        # returning the reference of inner_combined_func
-        # this reference will have the called result of all
-        # the functions that are passed to the combined_funcs
-        return inner_combined_func
-    
+    def _refresh_value_label(self) -> None:
+        value = self.get_value()
+        self._value_label.setText(str(int(value) if self._is_int else round(value, 2)))
 
-    def _update_value_text(self, _):
-        """
-        Update the text box every update of the slider and eventually shows warning
-        """
-        self._value_text.configure(text=str(round(self.get_value(), 2)))
-
+    def _on_changed(self, _) -> None:
+        self._refresh_value_label()
         if self._warning_trigger_value:
-            if self._warning_trigger_value <= self.slider_value.get():
-                self.warning_label.pack()
-            else:
-                self.warning_label.pack_forget()
+            self.warning_label.setVisible(self._warning_trigger_value <= self.get_value())
+        if self._command:
+            self._command(self.get_value())
 
-    def get_value(self) -> float:
-        """
-        return the slider value as float number
-        """
-        return self.slider_value.get()
+    def get_value(self) -> Union[float, int]:
+        """Restituisce il valore corrente dello slider (int o float)."""
+        if self._is_int:
+            return int(self._slider.value())
+        return self._from_ticks(self._slider.value())
