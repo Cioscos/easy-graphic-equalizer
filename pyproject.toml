@@ -1,0 +1,21 @@
+[project]
+name = "easy-graphic-equalizer"
+version = "1.0.0"
+description = "Sound Wave — a real-time audio graphic equalizer with Tkinter preview and high-performance OpenGL fullscreen visualization."
+readme = "README.md"
+requires-python = ">=3.12"
+license = { file = "LICENSE" }
+authors = [
+    { name = "Cioscos", email = "claudiocicca1998@gmail.com" },
+]
+dependencies = [
+    "numpy",
+    "scipy",
+    "SoundCard",
+    "customtkinter",
+    "CTkMessagebox",
+    "Pillow",
+    "PyOpenGL",
+    "PyOpenGL-accelerate==3.1.9a2",
+    "glfw",
+]
