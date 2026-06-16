@@ -1,5 +1,8 @@
 # Python virtual environment
+# .venv  -> usata da Windows (il build py-to-exe la referenzia come .venv/Lib/...)
+# .venv-linux -> usata da WSL2/Linux via UV_PROJECT_ENVIRONMENT (vedi CLAUDE.md)
 .venv
+.venv-linux/
 
 # IDE Folders
 .vscode
