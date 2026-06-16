@@ -536,6 +536,15 @@ class EqualizerOpenGLThread(threading.Thread):
         glBufferData(GL_ARRAY_BUFFER, n * 4, None, GL_STREAM_DRAW)
         self._heights_capacity = n
 
+    def _display_heights(self, heights: np.ndarray) -> np.ndarray:
+        """
+        Applica la disposizione delle barre prima dell'upload: identità in ordine
+        standard, riordino simmetrico (bassi al centro, raddoppia) altrimenti.
+        """
+        if self._band_order_symmetric:
+            return arrange_symmetric(heights)
+        return heights
+
     def _render(self, heights: np.ndarray) -> None:
         """
         Disegna un frame: pulisce, disegna lo sfondo (se presente) e poi le barre
@@ -545,6 +554,9 @@ class EqualizerOpenGLThread(threading.Thread):
             heights (np.ndarray): altezze normalizzate [0,1], una per barra (float32).
         """
         glClear(GL_COLOR_BUFFER_BIT)
+
+        # Disposizione barre (es. simmetrica) prima di calcolare il conteggio.
+        heights = self._display_heights(heights)
 
         num_bars = int(heights.shape[0])
         if num_bars < 1:
