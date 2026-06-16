@@ -34,6 +34,7 @@ from gui.background_filepicker_frame import BackgroundFilepickerFrame
 from gui.help_window import HelpWindow
 from gui.animated_button import AnimatedButton
 from gui.equalizer_preview_widget import EqualizerPreviewWidget
+from gui.color_picker_frame import ColorPickerFrame
 from gui.theme import (
     font_title, font_button, font_label, font_body,
     COLOR_NEUTRAL, COLOR_NEUTRAL_HOVER,
@@ -53,6 +54,9 @@ DEFAULT_BG_IMAGE = 'bg (19).png'
 
 # Mappa il tema esposto nell'interfaccia alla modalità di qdarktheme.
 _THEME_MODE = {"Light": "light", "Dark": "dark", "System": "auto"}
+
+# Etichette del menu "Modalità colore" -> intero uColorMode del renderer.
+_COLOR_MODE_TO_INT = {"Classico": 0, "Tinta unica": 1, "Gradiente": 2, "Spettro": 3}
 
 
 class AudioCaptureGUI(QMainWindow):
@@ -79,6 +83,13 @@ class AudioCaptureGUI(QMainWindow):
         self.devices = []
         self.bg_alpha = 0.5
         self.bars_alpha = 1.0  # opacità delle barre nel renderer OpenGL (1.0 = piene)
+
+        # Stato GUI dell'aspetto barre (Blocco 1). Default = look attuale.
+        self.bars_color_mode = 0
+        self.bars_color_a = (0.231, 0.420, 1.0)
+        self.bars_color_b = (1.0, 0.231, 0.816)
+        self.bars_green_split = 0.5
+        self.bars_yellow_split = 0.8
         self.bg_video_path = None  # path del video di sfondo selezionato (None = immagine)
         self.selected_monitor = None
         self.available_monitors = self.get_available_monitors()
@@ -198,6 +209,7 @@ class AudioCaptureGUI(QMainWindow):
         self.tabview.addTab(self._build_visualization_tab(), "🎨 Visualizzazione")
         self.tabview.addTab(self._build_audio_tab(), "🎵 Audio")
         self.tabview.addTab(self._build_advanced_tab(), "⚙️ Avanzate")
+        self.tabview.addTab(self._build_bars_tab(), "🎛️ Barre")
         parent_layout.addWidget(self.tabview, 1)
 
     def _build_visualization_tab(self) -> QWidget:
@@ -328,6 +340,64 @@ class AudioCaptureGUI(QMainWindow):
         v.addStretch(1)
         return tab
 
+    def _build_bars_tab(self) -> QWidget:
+        tab = QWidget()
+        v = QVBoxLayout(tab)
+
+        v.addWidget(self._make_label("Colore", font_label()))
+
+        self.bars_mode_option = OptionMenuCustomFrame(
+            header_name='Modalità colore:',
+            values=["Classico", "Tinta unica", "Gradiente", "Spettro"],
+            initial_value="Classico",
+            command=self.on_color_mode_changed,
+        )
+        v.addWidget(self.bars_mode_option)
+
+        # Classico: due soglie regolabili
+        self.bars_yellow_thr = SliderCustomFrame(
+            header_name='Soglia giallo:',
+            command=self.update_green_split,
+            initial_value=self.bars_green_split,
+        )
+        v.addWidget(self.bars_yellow_thr)
+
+        self.bars_red_thr = SliderCustomFrame(
+            header_name='Soglia rosso:',
+            command=self.update_yellow_split,
+            initial_value=self.bars_yellow_split,
+        )
+        v.addWidget(self.bars_red_thr)
+
+        # Tinta unica: un colore
+        self.bars_solid_color = ColorPickerFrame(
+            header_name='Colore barre:',
+            initial_color='#22d36a',
+            command=self.update_color_a,
+        )
+        v.addWidget(self.bars_solid_color)
+
+        # Gradiente: due colori
+        self.bars_grad_base = ColorPickerFrame(
+            header_name='Colore base:',
+            initial_color='#3b6bff',
+            command=self.update_color_a,
+        )
+        v.addWidget(self.bars_grad_base)
+
+        self.bars_grad_top = ColorPickerFrame(
+            header_name='Colore cima:',
+            initial_color='#ff3bd0',
+            command=self.update_color_b,
+        )
+        v.addWidget(self.bars_grad_top)
+
+        v.addStretch(1)
+
+        # Imposta la visibilità condizionale iniziale (modalità = Classico)
+        self.on_color_mode_changed("Classico")
+        return tab
+
     # --- Device --------------------------------------------------------------
     async def get_devices(self):
         with ThreadPoolExecutor() as executor:
@@ -445,6 +515,40 @@ class AudioCaptureGUI(QMainWindow):
         self.bars_alpha = value
         if self.equalizer_opengl_thread:
             self.equalizer_control_queue.put({"type": "set_bars_alpha", "value": float(value)})
+
+    def on_color_mode_changed(self, label: str):
+        """Mostra solo i controlli colore pertinenti e inoltra la modalità."""
+        classico = label == "Classico"
+        tinta = label == "Tinta unica"
+        grad = label == "Gradiente"
+        self.bars_yellow_thr.setVisible(classico)
+        self.bars_red_thr.setVisible(classico)
+        self.bars_solid_color.setVisible(tinta)
+        self.bars_grad_base.setVisible(grad)
+        self.bars_grad_top.setVisible(grad)
+        self.bars_color_mode = _COLOR_MODE_TO_INT.get(label, 0)
+        if self.equalizer_opengl_thread:
+            self.equalizer_control_queue.put({"type": "set_color_mode", "value": self.bars_color_mode})
+
+    def update_color_a(self, rgb):
+        self.bars_color_a = rgb
+        if self.equalizer_opengl_thread:
+            self.equalizer_control_queue.put({"type": "set_color_a", "value": rgb})
+
+    def update_color_b(self, rgb):
+        self.bars_color_b = rgb
+        if self.equalizer_opengl_thread:
+            self.equalizer_control_queue.put({"type": "set_color_b", "value": rgb})
+
+    def update_green_split(self, value):
+        self.bars_green_split = float(value)
+        if self.equalizer_opengl_thread:
+            self.equalizer_control_queue.put({"type": "set_green_split", "value": float(value)})
+
+    def update_yellow_split(self, value):
+        self.bars_yellow_split = float(value)
+        if self.equalizer_opengl_thread:
+            self.equalizer_control_queue.put({"type": "set_yellow_split", "value": float(value)})
 
     def update_db_floor(self, value):
         # Parametri DSP del tab Avanzate: solo renderer OpenGL (come bars_alpha).
@@ -593,6 +697,11 @@ class AudioCaptureGUI(QMainWindow):
                 attack_tau=self.adv_attack_slider.get_value() / 1000.0,
                 release_tau=self.adv_release_slider.get_value() / 1000.0,
                 tilt_db_per_oct=self.adv_tilt_slider.get_value(),
+                color_mode=self.bars_color_mode,
+                color_a=self.bars_color_a,
+                color_b=self.bars_color_b,
+                green_split=self.bars_green_split,
+                yellow_split=self.bars_yellow_split,
                 monitor=self.selected_monitor,
                 window_close_callback=self.opengl_window_closed,
             )
