@@ -12,7 +12,10 @@ import glfw
 
 from thread.audioCaptureThread import AudioCaptureThread
 from thread.equalizer_tkinter_thread import EqualizerTkinterThread
-from thread.opengl_thread import EqualizerOpenGLThread
+from thread.opengl_thread import (
+    EqualizerOpenGLThread,
+    DB_FLOOR, DB_CEILING, ATTACK_TAU, RELEASE_TAU, TILT_DB_PER_OCT,
+)
 from gui.slider_frame import SliderCustomFrame
 from gui.optionmenu_frame import OptionMenuCustomFrame
 from gui.background_filepicker_frame import BackgroundFilepickerFrame
@@ -316,6 +319,7 @@ class AudioCaptureGUI(ctk.CTk):
 
         self._build_visualization_tab(tabview)
         self._build_audio_tab(tabview)
+        self._build_advanced_tab(tabview)
 
     def _build_visualization_tab(self, tabview):
         """
@@ -402,6 +406,76 @@ class AudioCaptureGUI(ctk.CTk):
             value_type=SliderCustomFrame.ValueType.INT
         )
         self.frequency_slider.pack(side=tk.TOP, padx=10, pady=5, fill=tk.X)
+
+    def _build_advanced_tab(self, tabview):
+        """
+        Tab Avanzate: taratura DSP del renderer OpenGL (scala dB, ballistica delle
+        barre, tilt spettrale). Tutti questi controlli hanno effetto SOLO nella
+        visualizzazione fullscreen OpenGL — le callback no-op se non è attiva.
+        """
+        tabview.add("⚙️ Avanzate")
+        adv_tab = tabview.tab("⚙️ Avanzate")
+
+        # Pavimento dB: sotto questo livello la barra è a 0 (più basso = più sensibile)
+        self.adv_db_floor_slider = SliderCustomFrame(
+            adv_tab,
+            header_name='Pavimento dB:',
+            command=self.update_db_floor,
+            from_=-90,
+            to=-25,
+            initial_value=int(DB_FLOOR),
+            value_type=SliderCustomFrame.ValueType.INT
+        )
+        self.adv_db_floor_slider.pack(side=tk.TOP, padx=10, pady=5, fill=tk.X)
+
+        # Tetto dB: fondo scala, barra piena (più basso = riempie prima)
+        self.adv_db_ceiling_slider = SliderCustomFrame(
+            adv_tab,
+            header_name='Tetto dB:',
+            command=self.update_db_ceiling,
+            from_=-20,
+            to=6,
+            initial_value=int(DB_CEILING),
+            value_type=SliderCustomFrame.ValueType.INT
+        )
+        self.adv_db_ceiling_slider.pack(side=tk.TOP, padx=10, pady=5, fill=tk.X)
+
+        # Attacco (ms): velocità di salita delle barre
+        self.adv_attack_slider = SliderCustomFrame(
+            adv_tab,
+            header_name='Attacco (ms):',
+            command=self.update_attack_tau,
+            from_=1,
+            to=100,
+            initial_value=int(ATTACK_TAU * 1000),
+            value_type=SliderCustomFrame.ValueType.INT
+        )
+        self.adv_attack_slider.pack(side=tk.TOP, padx=10, pady=5, fill=tk.X)
+
+        # Rilascio (ms): velocità di discesa delle barre
+        self.adv_release_slider = SliderCustomFrame(
+            adv_tab,
+            header_name='Rilascio (ms):',
+            command=self.update_release_tau,
+            from_=20,
+            to=1000,
+            initial_value=int(RELEASE_TAU * 1000),
+            value_type=SliderCustomFrame.ValueType.INT
+        )
+        self.adv_release_slider.pack(side=tk.TOP, padx=10, pady=5, fill=tk.X)
+
+        # Tilt spettrale (dB/ottava): enfatizza bassi (<0) o alti (>0)
+        self.adv_tilt_slider = SliderCustomFrame(
+            adv_tab,
+            header_name='Tilt (dB/ottava):',
+            command=self.update_tilt,
+            from_=-6,
+            to=6,
+            steps=24,
+            initial_value=TILT_DB_PER_OCT,
+            value_type=SliderCustomFrame.ValueType.DOUBLE
+        )
+        self.adv_tilt_slider.pack(side=tk.TOP, padx=10, pady=5, fill=tk.X)
 
     def apply_background(self):
         # Rimuovi un eventuale segnaposto video: stiamo tornando a un'immagine.
@@ -519,6 +593,28 @@ class AudioCaptureGUI(ctk.CTk):
                 "value": float(value)
             }
             self.equalizer_control_queue.put(message)
+
+    def update_db_floor(self, value):
+        # Parametri DSP del tab Avanzate: solo renderer OpenGL (come bars_alpha).
+        if self.equalizer_opengl_thread:
+            self.equalizer_control_queue.put({"type": "set_db_floor", "value": float(value)})
+
+    def update_db_ceiling(self, value):
+        if self.equalizer_opengl_thread:
+            self.equalizer_control_queue.put({"type": "set_db_ceiling", "value": float(value)})
+
+    def update_attack_tau(self, value):
+        # Lo slider è in millisecondi; la pipeline DSP lavora in secondi.
+        if self.equalizer_opengl_thread:
+            self.equalizer_control_queue.put({"type": "set_attack_tau", "value": float(value) / 1000.0})
+
+    def update_release_tau(self, value):
+        if self.equalizer_opengl_thread:
+            self.equalizer_control_queue.put({"type": "set_release_tau", "value": float(value) / 1000.0})
+
+    def update_tilt(self, value):
+        if self.equalizer_opengl_thread:
+            self.equalizer_control_queue.put({"type": "set_tilt_db_per_oct", "value": float(value)})
 
     def update_bg_opengl(self, image: Image.Image):
         if self.equalizer_opengl_thread:
@@ -682,6 +778,11 @@ class AudioCaptureGUI(ctk.CTk):
                     bg_alpha=self.bg_alpha,
                     bars_alpha=self.bars_alpha,
                     bg_video=self.bg_video_path,
+                    db_floor=self.adv_db_floor_slider.get_value(),
+                    db_ceiling=self.adv_db_ceiling_slider.get_value(),
+                    attack_tau=self.adv_attack_slider.get_value() / 1000.0,
+                    release_tau=self.adv_release_slider.get_value() / 1000.0,
+                    tilt_db_per_oct=self.adv_tilt_slider.get_value(),
                     monitor=self.selected_monitor,
                     window_close_callback=self.opengl_window_closed
                 )

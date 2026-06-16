@@ -147,6 +147,11 @@ class EqualizerOpenGLThread(threading.Thread):
                  bg_alpha: Optional[float] = None,
                  bars_alpha: float = 1.0,
                  bg_video: Optional[str] = None,
+                 db_floor: float = DB_FLOOR,
+                 db_ceiling: float = DB_CEILING,
+                 attack_tau: float = ATTACK_TAU,
+                 release_tau: float = RELEASE_TAU,
+                 tilt_db_per_oct: float = TILT_DB_PER_OCT,
                  window_close_callback: Callable = None):
         super().__init__()
         self._audio_queue = audio_queue
@@ -159,6 +164,15 @@ class EqualizerOpenGLThread(threading.Thread):
         self._bg_alpha = bg_alpha
         self._bars_alpha = bars_alpha
         self.window_close_callback = window_close_callback
+
+        # --- Taratura DSP regolabile a runtime (default = costanti di modulo). ---
+        # I metodi leggono questi attributi, non le costanti globali, così la GUI
+        # può modificarli via process_control_message (vedi set_db_floor & co.).
+        self._db_floor = db_floor
+        self._db_ceiling = db_ceiling
+        self._attack_tau = attack_tau
+        self._release_tau = release_tau
+        self._tilt_db_per_oct = tilt_db_per_oct
 
         # Oggetti OpenGL (creati in init_gl_objects una volta attivo il contesto)
         self._bars_program = None
@@ -228,12 +242,12 @@ class EqualizerOpenGLThread(threading.Thread):
         self._valid_bins = bin_band >= 0
 
         # Tilt spettrale opzionale (dB per banda), basato sulla freq. centrale geometrica
-        if TILT_DB_PER_OCT != 0.0:
+        if self._tilt_db_per_oct != 0.0:
             centers = np.array([
                 math.sqrt(max(low, 1e-9) * max(high, 1e-9))
                 for low, high in self.frequency_bands
             ])
-            self._tilt_db = TILT_DB_PER_OCT * np.log2(np.maximum(centers, 1e-9) / 1000.0)
+            self._tilt_db = self._tilt_db_per_oct * np.log2(np.maximum(centers, 1e-9) / 1000.0)
         else:
             self._tilt_db = 0.0
 
@@ -319,8 +333,11 @@ class EqualizerOpenGLThread(threading.Thread):
         # Conversione in dB (+ tilt percettivo opzionale)
         band_db = 10.0 * np.log10(band_power + 1e-12) + self._tilt_db
 
-        # Mappa [DB_FLOOR, DB_CEILING] → [0, 1] con riferimento FISSO (no per-frame max)
-        level = (band_db - DB_FLOOR) / (DB_CEILING - DB_FLOOR)
+        # Mappa [db_floor, db_ceiling] → [0, 1] con riferimento FISSO (no per-frame max).
+        # max(..., 1e-6) protegge da una divisione degenere se i due estremi
+        # venissero impostati troppo vicini/invertiti via control message.
+        denom = max(self._db_ceiling - self._db_floor, 1e-6)
+        level = (band_db - self._db_floor) / denom
         np.clip(level, 0.0, 1.0, out=level)
 
         # Noise gate in termini normalizzati
@@ -532,6 +549,29 @@ class EqualizerOpenGLThread(threading.Thread):
             # L'opacità delle barre è una uniform dello shader delle barre.
             self._bars_alpha = message['value']
 
+        elif message_type == 'set_db_floor':
+            # dB sotto cui la barra è a 0. Letto ogni frame in create_equalizer.
+            self._db_floor = message['value']
+
+        elif message_type == 'set_db_ceiling':
+            # dB di fondo scala (barra piena).
+            self._db_ceiling = message['value']
+
+        elif message_type == 'set_attack_tau':
+            # Costante di tempo di salita (s) della ballistica delle barre.
+            self._attack_tau = message['value']
+
+        elif message_type == 'set_release_tau':
+            # Costante di tempo di discesa (s) della ballistica delle barre.
+            self._release_tau = message['value']
+
+        elif message_type == 'set_tilt_db_per_oct':
+            # Il tilt è un array dB per-banda: va ricalcolato. _compute_band_bins
+            # rifà tilt e mappa bin→banda (costo trascurabile) senza azzerare i
+            # buffer ampiezze (a differenza di _setup_bands), evitando glitch.
+            self._tilt_db_per_oct = message['value']
+            self._compute_band_bins()
+
         elif message_type == 'set_image':
             # L'immagine sostituisce il video: ferma l'eventuale riproduzione.
             self._stop_video()
@@ -567,8 +607,8 @@ class EqualizerOpenGLThread(threading.Thread):
         if targets.shape[0] != self.current_amplitudes.shape[0]:
             self.current_amplitudes = np.zeros(targets.shape[0], dtype=np.float32)
 
-        attack = 1.0 - math.exp(-delta_time / ATTACK_TAU)
-        release = 1.0 - math.exp(-delta_time / RELEASE_TAU)
+        attack = 1.0 - math.exp(-delta_time / self._attack_tau)
+        release = 1.0 - math.exp(-delta_time / self._release_tau)
 
         coeff = np.where(targets > self.current_amplitudes, attack, release)
         self.current_amplitudes = self.current_amplitudes + (targets - self.current_amplitudes) * coeff
