@@ -1,44 +1,49 @@
 import numpy as np
-from collections import deque
+
 
 class AudioBufferAccumulator:
     """
-    Accumulates multi-channel audio (e.g., 2 for stereo) from incoming chunks
-    and provides a method to retrieve a 2D window of samples (window_size x channels)
-    for FFT analysis, with overlap.
+    Ring buffer numpy che mantiene sempre gli ultimi `window_size` frame
+    multi-canale (es. 2 per stereo) ricevuti dalla cattura audio.
+
+    A differenza della versione precedente basata su deque + overlap, qui non
+    c'è alcun consumo: ogni chiamata a `get_window_for_fft` restituisce uno
+    *snapshot* della finestra più recente senza scartare nulla. Questo permette
+    al renderer OpenGL di ricalcolare l'FFT a ogni frame sull'audio più fresco
+    possibile (latenza minima) e usa operazioni vettoriali invece di iterare in
+    Python frame-per-frame (costo CPU ridotto).
 
     Attributes:
-        window_size (int): Number of frames for one FFT window (e.g., 2048).
-        overlap_size (int): Number of frames that will overlap between consecutive windows.
-        channels (int): Number of audio channels (e.g., 2 for stereo).
+        window_size (int): Numero di frame di una finestra FFT (es. N_FFT).
+        channels (int): Numero di canali audio (2 per stereo).
     """
 
-    def __init__(self, window_size: int = 2048, overlap_size: int = 1024, channels: int = 2):
+    def __init__(self, window_size: int = 2048, channels: int = 2):
         """
-        Initializes the accumulator.
+        Inizializza il ring buffer.
 
         Args:
-            window_size (int): The number of frames for a single FFT window (e.g., 2048).
-            overlap_size (int): The number of frames to keep in the buffer for overlap (e.g., 1024).
-            channels (int): The number of audio channels (2 for stereo).
+            window_size (int): Numero di frame di una singola finestra FFT.
+            channels (int): Numero di canali audio (2 per stereo).
         """
         self.window_size = window_size
-        self.overlap_size = overlap_size
         self.channels = channels
 
-        # We'll store up to 'window_size' rows, each row shape = (channels,)
-        self.buffer = deque(maxlen=window_size)
+        # Buffer circolare preallocato: (window_size, channels)
+        self.buffer = np.zeros((window_size, channels), dtype=np.float32)
+        self.write_pos = 0          # prossima posizione di scrittura
+        self.total_written = 0      # frame totali scritti (per sapere se è "pieno")
 
     def add_samples(self, samples: np.ndarray) -> None:
         """
-        Add new multi-channel samples to the accumulator buffer.
+        Aggiunge nuovi frame multi-canale al ring buffer, gestendo il wrap.
 
         Args:
-            samples (np.ndarray): A NumPy array of shape (chunk_size, channels).
-                                  For stereo, (chunk_size, 2).
+            samples (np.ndarray): Array di forma (chunk_size, channels).
+                                  Per stereo, (chunk_size, 2).
 
         Raises:
-            ValueError: If 'samples' doesn't have the expected number of channels.
+            ValueError: Se 'samples' non ha il numero di canali atteso.
         """
         if samples.ndim != 2 or samples.shape[1] != self.channels:
             raise ValueError(
@@ -46,32 +51,45 @@ class AudioBufferAccumulator:
                 f"but got {samples.shape}."
             )
 
-        # Append each frame (row) into the buffer
-        for frame in samples:
-            self.buffer.append(frame)
+        n = samples.shape[0]
+
+        # Se il chunk è grande quanto/più del buffer, basta tenerne la coda
+        if n >= self.window_size:
+            self.buffer[:] = samples[-self.window_size:]
+            self.write_pos = 0
+        else:
+            end = self.write_pos + n
+            if end <= self.window_size:
+                self.buffer[self.write_pos:end] = samples
+            else:
+                # Wrap: spezza la scrittura in due tratti
+                first = self.window_size - self.write_pos
+                self.buffer[self.write_pos:] = samples[:first]
+                self.buffer[:n - first] = samples[first:]
+            self.write_pos = end % self.window_size
+
+        self.total_written += n
 
     def get_window_for_fft(self) -> np.ndarray:
         """
-        Retrieves a 2D window of shape (window_size, channels) for FFT analysis,
-        if enough frames are available. Also enforces overlap by discarding only
-        'window_size - overlap_size' frames after extraction.
+        Restituisce uno snapshot degli ultimi `window_size` frame, in ordine
+        cronologico, di forma (window_size, channels). Non scarta nulla.
 
         Returns:
-            np.ndarray: An array of shape (window_size, channels).
-                        Returns an empty array if there are not enough frames.
+            np.ndarray: Array (window_size, channels), oppure un array vuoto se
+                        non sono ancora arrivati abbastanza frame.
         """
-        if len(self.buffer) < self.window_size:
-            # Not enough frames yet
+        if self.total_written < self.window_size:
+            # Non ancora abbastanza frame per una finestra completa
             return np.array([])
 
-        # Convert the deque to a NumPy array
-        # Shape: (window_size, channels)
-        window_data = np.array(self.buffer, dtype=np.float32)
+        if self.write_pos == 0:
+            # Il frame più vecchio è all'indice 0: buffer già in ordine
+            return self.buffer.copy()
 
-        # Discard only the oldest frames that exceed the overlap
-        num_to_discard = self.window_size - self.overlap_size
-        for _ in range(num_to_discard):
-            if self.buffer:
-                self.buffer.popleft()
-
-        return window_data
+        # Riallinea: dalla posizione di scrittura (più vecchio) fino alla fine,
+        # poi dall'inizio fino alla posizione di scrittura (più recente).
+        return np.concatenate(
+            (self.buffer[self.write_pos:], self.buffer[:self.write_pos]),
+            axis=0
+        )

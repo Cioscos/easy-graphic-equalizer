@@ -20,7 +20,9 @@ from gui.animated_button import AnimatedButton
 from gui.processes_number_frame import ProcessesNumberFrame
 from resource_manager import ResourceManager
 
-MAX_QUEUE_SIZE = 200
+# Coda audio volutamente piccola: il renderer svuota tutta la coda a ogni frame
+# tenendo solo l'audio più recente, quindi una coda corta evita backlog/latenza.
+MAX_QUEUE_SIZE = 8
 INITIAL_FREQUENCIES_BANDS = 9
 SINGLE_LEFT_MOUSE_BOTTON_CLICK = '<Button-1>'
 DOUBLE_LEFT_MOUSE_BOTTON_CLICK = '<Double-Button-1>'

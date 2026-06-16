@@ -1,14 +1,13 @@
 import threading
 import math
 import time
-from concurrent.futures import ProcessPoolExecutor
+import queue
+import ctypes
 from typing import Optional, Callable
-from collections import deque
 
 import glfw
 from OpenGL.GL import *
 import numpy as np
-import scipy.fftpack as fft_pack
 from PIL import Image
 from PIL.Image import Transpose
 
@@ -23,128 +22,39 @@ GENERAL_LOG = False
 FFT_LOGS = False
 PERF_LOGS = False
 
-
-def compute_fft(channel_samples: np.ndarray) -> np.ndarray:
-    """
-    Compute the FFT magnitudes for one channel of audio.
-
-    1) Applies a Hanning window to reduce spectral leakage.
-    2) Zero-pads only if len(channel_samples) < N_FFT.
-    3) Returns the absolute value of the FFT (magnitudes).
-
-    Args:
-        channel_samples (np.ndarray): The 1D array of audio samples for a single channel.
-
-    Returns:
-        np.ndarray: The magnitude of the FFT for these samples.
-    """
-    # Apply a Blackman window (come in Tkinter)
-    window = np.blackman(len(channel_samples))
-    windowed_samples = channel_samples * window
-
-    # If needed, zero-pad up to N_FFT
-    if len(channel_samples) < N_FFT:
-        padded = np.zeros(N_FFT, dtype=windowed_samples.dtype)
-        padded[:len(windowed_samples)] = windowed_samples
-        fft_values = np.fft.fft(padded)
-    else:
-        # Otherwise, no need to pad
-        fft_values = np.fft.fft(windowed_samples)
-
-    # Return magnitude
-    return np.abs(fft_values)
-
-
-def process_frequency_bands(args):
-    """
-    process_frequency_bands handles the per-band amplitude calculation
-    using np.mean for each band filter (allineato con Tkinter).
-    """
-    fft_values, freqs, bands = args
-    band_amplitudes = []
-
-    for low_freq, high_freq in bands:
-        band_mask = np.logical_and(freqs >= low_freq, freqs <= high_freq)
-        if np.any(band_mask):
-            # Usa solo mean come in Tkinter
-            band_amplitude = np.mean(fft_values[band_mask]) * np.sum(band_mask)
-        else:
-            band_amplitude = 0.0
-
-        band_amplitudes.append(band_amplitude)
-
-    # LOG
-    if FFT_LOGS:
-        print('LOGGING RAW AMPLITUDES')
-        for i, amp in enumerate(band_amplitudes):
-            print(f"Raw band {i} amplitude = {amp:.4f}")
-
-    return band_amplitudes
-
-
-def compute_channel_fft(args):
-    """
-    compute_channel_fft is used in parallel or single-worker mode
-    to compute the FFT for each channel, then process frequency bands.
-
-    Steps:
-        1) For each channel in audio_samples, call compute_fft (using the Blackman window).
-        2) Filter to the positive half of freqs if desired (shown below).
-        3) Use process_frequency_bands(...) to get band amplitudes for each channel.
-
-    Returns:
-        list of lists: band_amplitude_chunks, where each sub-list corresponds
-                      to one channel's band amplitudes.
-    """
-    audio_samples, frequency_band_chunks = args
-
-    # Compute FFT for all channels
-    fft_magnitudes_list = []
-    for channel_samples in audio_samples:
-        fft_magnitudes = compute_fft(channel_samples)
-        fft_magnitudes_list.append(fft_magnitudes)
-
-    # Frequencies array (same length as the final FFT array)
-    freqs_full = fft_pack.fftfreq(len(fft_magnitudes_list[0]), 1.0 / RATE)
-
-    # Filter only the positive half
-    pos_mask = (freqs_full >= 0)
-    freqs_pos = freqs_full[pos_mask]
-
-    # For each channel, keep only positive frequencies
-    # (This ensures we don't double-count negative freq bins.)
-    channel_fft_list = [
-        fft_mags[pos_mask] for fft_mags in fft_magnitudes_list
-    ]
-
-    # Process frequency bands for each channel
-    band_amplitude_chunks = []
-    for fft_values in channel_fft_list:
-        band_amplitude_chunks.append(
-            process_frequency_bands(
-                (fft_values, freqs_pos, frequency_band_chunks)
-            )
-        )
-
-    return band_amplitude_chunks
+# --- Taratura fedeltà/latenza (regolabili a vista) ---
+# Scala dB assoluta: l'altezza barra riflette il livello reale del segnale.
+DB_FLOOR = -60.0        # dB: sotto questo livello la barra è a 0
+DB_CEILING = 0.0        # dB: fondo scala (barra piena). Abbassare (es. -10) per riempire prima.
+# Ballistica delle barre (costanti di tempo, frame-rate-indipendenti):
+ATTACK_TAU = 0.012      # s: salita rapida → cattura i transienti (kick/snare) quasi all'istante
+RELEASE_TAU = 0.220     # s: discesa morbida → falloff leggibile in stile peak-meter
+# Compensazione spettrale opzionale (0 = off). +3.0 ≈ tilt "pink" (+3 dB/ottava).
+TILT_DB_PER_OCT = 0.0
 
 
 class EqualizerOpenGLThread(threading.Thread):
     """
     Thread per la visualizzazione OpenGL dell'equalizzatore audio.
 
+    Pipeline DSP (ottimizzata per fedeltà e latenza, NON più allineata a Tkinter):
+        finestra Blackman → rfft (una sola volta, vettoriale sui canali) →
+        potenza per bin normalizzata sul guadagno finestra → somma per banda
+        logaritmica via bincount → conversione in dB con riferimento FISSO →
+        mappa [DB_FLOOR, DB_CEILING] in [0,1] → noise gate → ballistica
+        attacco/rilascio. L'FFT viene ricalcolata a ogni frame sulla finestra
+        più fresca fornita dal ring buffer.
+
     Attributes:
         audio_queue: Coda per ricevere i dati audio
         control_queue: Coda per i messaggi di controllo
-        noise_threshold: Soglia di rumore (0-1)
+        noise_threshold: Soglia di rumore normalizzata (0-1)
         channels: Numero di canali audio (default 2 per stereo)
         n_bands: Numero di bande di frequenza
         monitor: Monitor per fullscreen
         bg_image: Immagine di sfondo
         bg_alpha: Trasparenza dello sfondo
         window_close_callback: Callback alla chiusura della finestra
-        workers: Numero di worker per il calcolo parallelo
-        auto_workers: Se True, calcola automaticamente il numero di worker
     """
 
     def __init__(self,
@@ -169,11 +79,10 @@ class EqualizerOpenGLThread(threading.Thread):
         self._bg_image = bg_image
         self._bg_alpha = bg_alpha
         self.window_close_callback = window_close_callback
-        self._auto_workers = auto_workers
-
-        # List of temporary amplitudes to create an animation effect
-        self.frequency_bands = self.generate_frequency_bands(self._n_bands)
-        self.previous_amplitudes = [0.0] * len(self.frequency_bands)
+        # NOTA: `workers`/`auto_workers` sono accettati per compatibilità con il
+        # chiamante ma ora inerti: l'FFT è single-pass vettoriale (rfft) e non usa
+        # più ProcessPoolExecutor, che aggiungeva latenza (pickling/IPC) ricalcolando
+        # l'intera FFT per ogni worker.
 
         # We create one VBO per bar
         self.vbos = []
@@ -184,54 +93,55 @@ class EqualizerOpenGLThread(threading.Thread):
         self.window_width = self.window_height = None
         self.frame_rate = None
 
-        self._workers = self._calculate_workers(n_bands) if auto_workers else workers
+        # Finestra Blackman e guadagno coerente (precalcolati: lunghezza fissa N_FFT).
+        # Dividere |FFT| per window_gain calibra un tono a fondo scala a ~0 dB.
+        self._window = np.blackman(N_FFT).astype(np.float32)
+        self._window_gain = float(np.sum(self._window)) / 2.0
 
-        self.executor = ProcessPoolExecutor(max_workers=self._workers)
-
-        # AudioBufferAccumulator per overlap (come Tkinter)
+        # Ring buffer snapshot: fornisce sempre gli ultimi N_FFT frame (latenza minima)
         self.audio_accumulator = AudioBufferAccumulator(window_size=N_FFT,
-                                                        overlap_size=N_FFT // 2,
                                                         channels=self._channels)
 
-        # --- MIGLIORAMENTI PER FLUIDITÀ ---
-        # 1. Buffer circolare per interpolazione temporale
-        self.amplitude_history_size = 5  # Numero di campioni storici da mantenere
-        self.amplitude_history = deque(maxlen=self.amplitude_history_size)
+        # Bande di frequenza + mappa bin→banda + buffer ampiezze
+        self._setup_bands(self._n_bands)
 
-        # 2. Timing più preciso - SARÀ IMPOSTATO DINAMICAMENTE
-        self.fft_interval = None  # Verrà calcolato in base al refresh rate
-        self.last_fft_time = 0.0
-
-        # 3. Target amplitudes per interpolazione più fluida
-        self.target_amplitudes = [0.0] * self._n_bands
-        self.current_amplitudes = [0.0] * self._n_bands
-
-        # 4. Fattore di smoothing adattivo
-        self.base_smooth_factor = 0.5  # Valore base per 60Hz
-        self.smooth_acceleration = 2.0  # Accelerazione per cambiamenti rapidi
-
-        # Questi verranno aggiustati in base al refresh rate nel metodo run()
-
-    def _calculate_workers(self, bands: int) -> int:
+    def _setup_bands(self, num_bands: int) -> None:
         """
-        Calcola il numero di worker basato sul numero di bande.
-
-        Args:
-            bands (int): Numero di bande
-
-        Returns:
-            int: Il numero di worker
+        (Ri)calcola le bande di frequenza, la mappa bin→banda per l'aggregazione
+        vettoriale e azzera i buffer delle ampiezze. Da chiamare in __init__ e a
+        ogni cambio del numero di bande.
         """
-        if bands <= 10:
-            return 1
-        elif bands <= 30:
-            return 2
-        elif bands <= 50:
-            return 3
-        elif bands <= 70:
-            return 4
+        self.frequency_bands = self.generate_frequency_bands(num_bands)
+        self._compute_band_bins()
+
+        n = len(self.frequency_bands)
+        self.previous_amplitudes = [0.0] * n
+        self.target_amplitudes = np.zeros(n, dtype=np.float32)
+        self.current_amplitudes = np.zeros(n, dtype=np.float32)
+
+    def _compute_band_bins(self) -> None:
+        """
+        Precalcola, per ogni bin della rfft, l'indice della banda di appartenenza
+        (-1 se fuori da ogni banda) così l'aggregazione per banda si fa in O(bin)
+        con np.bincount invece di un loop di maschere booleane O(bande×bin).
+        Calcola anche l'eventuale tilt percettivo per banda.
+        """
+        freqs = np.fft.rfftfreq(N_FFT, 1.0 / RATE)  # len N_FFT//2 + 1
+        bin_band = np.full(freqs.shape, -1, dtype=np.int64)
+        for b, (low_freq, high_freq) in enumerate(self.frequency_bands):
+            bin_band[(freqs >= low_freq) & (freqs <= high_freq)] = b
+        self._bin_band = bin_band
+        self._valid_bins = bin_band >= 0
+
+        # Tilt spettrale opzionale (dB per banda), basato sulla freq. centrale geometrica
+        if TILT_DB_PER_OCT != 0.0:
+            centers = np.array([
+                math.sqrt(max(low, 1e-9) * max(high, 1e-9))
+                for low, high in self.frequency_bands
+            ])
+            self._tilt_db = TILT_DB_PER_OCT * np.log2(np.maximum(centers, 1e-9) / 1000.0)
         else:
-            return 5
+            self._tilt_db = 0.0
 
     def generate_frequency_bands(self, num_bands: int):
         """
@@ -285,106 +195,55 @@ class EqualizerOpenGLThread(threading.Thread):
                          audio_data: np.ndarray,
                          frequency_bands: list[tuple[float, float]],
                          noise_threshold: float = 0.1,
-                         channels: int = 2) -> list[float]:
+                         channels: int = 2) -> np.ndarray:
         """
-        Calcola le ampiezze per-banda per un blocco di dati audio multi-canale.
-        Allineato con l'implementazione Tkinter.
+        Calcola le ampiezze per-banda (livello normalizzato in [0,1]) per una
+        finestra audio multi-canale, su scala dB con riferimento fisso.
 
         Args:
             audio_data (np.ndarray): shape (N_FFT, channels).
             frequency_bands (list): lista di tuple (low_freq, high_freq).
-            noise_threshold (float): soglia di rumore lineare.
+            noise_threshold (float): soglia di rumore normalizzata in [0,1].
             channels (int): numero di canali (2 per stereo).
 
         Returns:
-            list[float]: ampiezza normalizzata per ogni banda in [0..1].
+            np.ndarray: livello per ogni banda in [0..1].
         """
-        # LOG dimensioni
-        if FFT_LOGS:
-            print(f"LOG: create_equalizer -> audio_data.shape={audio_data.shape}, freq_bands={len(frequency_bands)}")
+        # (N_FFT, channels) → (channels, N_FFT)
+        samples = audio_data.T
 
-        # Transpose so shape = (channels, N_FFT)
-        audio_samples: np.ndarray = audio_data.T
-        assert audio_samples.shape[0] == channels, (
-            f"Input data has {audio_samples.shape[0]} channels, expected {channels}"
+        # Finestra Blackman (broadcast su tutti i canali) + rfft (solo freq. positive)
+        windowed = samples * self._window                       # (channels, N_FFT)
+        spectrum = np.fft.rfft(windowed, axis=1)                # (channels, N_FFT//2 + 1)
+
+        # Potenza per bin, normalizzata sul guadagno finestra (tono a fondo scala ~ 0 dB)
+        power = (np.abs(spectrum) / self._window_gain) ** 2
+        # Media della potenza tra i canali
+        power = power.mean(axis=0)                              # (N_FFT//2 + 1,)
+
+        # Somma dell'energia per banda in O(bin) (niente loop di maschere)
+        band_power = np.bincount(
+            self._bin_band[self._valid_bins],
+            weights=power[self._valid_bins],
+            minlength=len(frequency_bands)
         )
 
-        # Decide whether to use parallel approach or single-thread fallback
-        if self._workers > 1:
-            # PARALLEL BRANCH
-            bands_per_worker = max(1, len(frequency_bands) // self._workers)
+        # Conversione in dB (+ tilt percettivo opzionale)
+        band_db = 10.0 * np.log10(band_power + 1e-12) + self._tilt_db
 
-            frequency_band_chunks = []
-            start_index = 0
-            while start_index < len(frequency_bands):
-                end_index = min(start_index + bands_per_worker, len(frequency_bands))
-                sub_bands = frequency_bands[start_index:end_index]
-                frequency_band_chunks.append(sub_bands)
-                start_index = end_index
+        # Mappa [DB_FLOOR, DB_CEILING] → [0, 1] con riferimento FISSO (no per-frame max)
+        level = (band_db - DB_FLOOR) / (DB_CEILING - DB_FLOOR)
+        np.clip(level, 0.0, 1.0, out=level)
 
-            # Construct the arguments for each chunk
-            parallel_args = []
-            for chunk in frequency_band_chunks:
-                parallel_args.append((audio_samples, chunk))
+        # Noise gate in termini normalizzati
+        level[level < noise_threshold] = 0.0
 
-            # Use executor to parallelize
-            band_amplitude_chunks = list(
-                self.executor.map(
-                    compute_channel_fft,
-                    parallel_args
-                )
-            )
+        if FFT_LOGS:
+            print('LOGGING NORMALIZED LEVELS (dB scale)')
+            for i, lvl in enumerate(level):
+                print(f"Band {i} level = {lvl:.4f}")
 
-            # Combine results per channel
-            equalizer_data = [[] for _ in range(channels)]
-            for chunk_result in band_amplitude_chunks:
-                for ch_index, ch_band_amps in enumerate(chunk_result):
-                    equalizer_data[ch_index].extend(ch_band_amps)
-
-        else:
-            # SINGLE-THREAD FALLBACK (come Tkinter)
-            equalizer_data = []
-            for channel_samples in audio_samples:
-                # Apply Blackman window
-                window = np.blackman(len(channel_samples))
-                windowed_samples = channel_samples * window
-
-                # Zero-padding
-                padded_samples = np.pad(windowed_samples, (0, N_FFT - len(windowed_samples)), 'constant')
-                fft_values = np.abs(fft_pack.fft(padded_samples))
-                freqs = fft_pack.fftfreq(len(fft_values), 1.0 / RATE)
-
-                band_amplitudes = []
-                for low_freq, high_freq in frequency_bands:
-                    band_filter = np.logical_and(freqs >= low_freq, freqs <= high_freq)
-
-                    if np.any(band_filter):
-                        band_amplitude = np.mean(fft_values[band_filter]) * np.sum(band_filter)
-                    else:
-                        band_amplitude = 0
-
-                    band_amplitudes.append(band_amplitude)
-
-                equalizer_data.append(band_amplitudes)
-
-        # Merge channels (average)
-        avg_band_amplitudes = np.mean(equalizer_data, axis=0)
-
-        # Apply noise threshold
-        filtered_amplitudes = [
-            amp if amp >= noise_threshold else 0
-            for amp in avg_band_amplitudes
-        ]
-
-        # Normalize directly without dB conversion (come Tkinter)
-        max_amplitude = max(filtered_amplitudes)
-        epsilon = 1e-12
-        normalized_amplitudes = [
-            (amplitude / (max_amplitude + epsilon)) if max_amplitude > 0 else 0
-            for amplitude in filtered_amplitudes
-        ]
-
-        return normalized_amplitudes
+        return level
 
     def init_vbos(self):
         """
@@ -419,24 +278,10 @@ class EqualizerOpenGLThread(threading.Thread):
 
         elif message_type == 'set_frequency_bands':
             self._n_bands = message["value"]
-            self.frequency_bands = self.generate_frequency_bands(message["value"])
-            self.previous_amplitudes = [0] * len(self.frequency_bands)
-            self.target_amplitudes = [0.0] * self._n_bands
-            self.current_amplitudes = [0.0] * self._n_bands
-            self.amplitude_history.clear()
-            # Clear and reinitialize VBOs
-            if self.vbos:
-                glDeleteBuffers(len(self.vbos), self.vbos)
+            # Ricalcola bande, mappa bin→banda e buffer ampiezze
+            self._setup_bands(message["value"])
+            # Ricrea i VBO per il nuovo numero di barre (init_vbos elimina i vecchi)
             self.init_vbos()
-
-            if self._auto_workers:
-                new_workers_number = self._calculate_workers(message["value"])
-                if new_workers_number != self._workers:
-                    self._workers = new_workers_number
-                    if self._workers > 1:
-                        self.executor.shutdown(wait=True)
-                        self.executor = None
-                        self.executor = ProcessPoolExecutor(max_workers=self._workers)
 
         elif message_type == 'set_alpha':
             self._bg_alpha = message['value']
@@ -446,98 +291,37 @@ class EqualizerOpenGLThread(threading.Thread):
             self._bg_image = message['value']
             self._background_texture = self.load_texture()
 
-        elif message_type == 'set_workers':
-            self._workers = message["value"]
-            self.executor.shutdown(wait=True)
-            self.executor = None
-            self.executor = ProcessPoolExecutor(max_workers=message["value"])
+        elif message_type in ('set_workers', 'set_auto_workers'):
+            # Inerti: la multiprocessing è stata rimossa dal percorso FFT.
+            pass
 
-        elif message_type == 'set_auto_workers':
-            self._auto_workers = message["value"]
-            if self._auto_workers:
-                self._workers = self._calculate_workers(self._n_bands)
-                if self._workers > 1:
-                    self.executor.shutdown(wait=True)
-                    self.executor = None
-                    self.executor = ProcessPoolExecutor(max_workers=self._workers)
-
-    # def smooth_amplitudes(self, new_amplitudes: list[float], delta_time: float) -> list[float]:
-    #     """
-    #     Applica uno smoothing adattivo alle ampiezze per maggiore fluidità.
-    #
-    #     Args:
-    #         new_amplitudes: Le nuove ampiezze calcolate dall'FFT
-    #         delta_time: Tempo trascorso dall'ultimo frame
-    #
-    #     Returns:
-    #         list[float]: Ampiezze interpolate in modo fluido
-    #     """
-    #     # Aggiungi le nuove ampiezze alla storia
-    #     self.amplitude_history.append(new_amplitudes)
-    #
-    #     # Se non abbiamo abbastanza storia, usa solo l'ultimo valore
-    #     if len(self.amplitude_history) < 2:
-    #         return new_amplitudes
-    #
-    #     smoothed = []
-    #     for i in range(len(new_amplitudes)):
-    #         # Calcola la media mobile delle ultime ampiezze
-    #         historical_values = [hist[i] for hist in self.amplitude_history]
-    #         avg_amplitude = np.mean(historical_values)
-    #
-    #         # Calcola la velocità di cambiamento
-    #         if len(self.amplitude_history) >= 2:
-    #             velocity = abs(self.amplitude_history[-1][i] - self.amplitude_history[-2][i])
-    #         else:
-    #             velocity = 0
-    #
-    #         # Adatta il fattore di smoothing basato sulla velocità
-    #         # Più veloce il cambiamento, più reattivo dovrebbe essere
-    #         adaptive_smooth = self.base_smooth_factor + (velocity * self.smooth_acceleration)
-    #         adaptive_smooth = min(adaptive_smooth, 0.8)  # Limita il massimo
-    #
-    #         # Interpolazione esponenziale con fattore adattivo
-    #         # Normalizza per il frame rate - monitor più veloci = smoothing più veloce
-    #         frame_rate_factor = self.frame_rate / 60.0  # Normalizza rispetto a 60Hz
-    #         time_factor = 1 - math.exp(-delta_time * adaptive_smooth * 60 * frame_rate_factor)
-    #
-    #         # Interpola tra il valore corrente e il target
-    #         self.current_amplitudes[i] += (new_amplitudes[i] - self.current_amplitudes[i]) * time_factor
-    #
-    #         # Aggiungi una piccola componente della media mobile per stabilità
-    #         smoothed_value = self.current_amplitudes[i] * 0.9 + avg_amplitude * 0.1
-    #         smoothed.append(smoothed_value)
-    #
-    #     return smoothed
-
-    def smooth_amplitudes(self, new_amplitudes: list[float], delta_time: float) -> list[float]:
+    def smooth_amplitudes(self, targets, delta_time: float) -> np.ndarray:
         """
-        Applica uno smoothing adattivo alle ampiezze per maggiore fluidità.
+        Ballistica attacco-rapido / rilascio-lento (stile VU/peak-meter),
+        indipendente dal frame rate. La salita rapida cattura i transienti
+        (bassa latenza percepita), la discesa morbida rende il falloff leggibile.
+
+        Args:
+            targets: livelli target dall'FFT (array in [0,1])
+            delta_time: tempo trascorso dall'ultimo frame (s)
+
+        Returns:
+            np.ndarray: livelli interpolati correnti
         """
-        delta_time = max(delta_time, 1e-6)  # Prevent negative or zero delta_time
+        delta_time = max(delta_time, 1e-6)
+        targets = np.asarray(targets, dtype=np.float32)
 
-        smoothed = []
-        frame_rate_factor = self.frame_rate / 60.0
+        # Riallinea se è cambiato il numero di bande
+        if targets.shape[0] != self.current_amplitudes.shape[0]:
+            self.current_amplitudes = np.zeros(targets.shape[0], dtype=np.float32)
 
-        for i in range(len(new_amplitudes)):
-            if i >= len(self.current_amplitudes):
-                self.current_amplitudes.append(new_amplitudes[i])
+        attack = 1.0 - math.exp(-delta_time / ATTACK_TAU)
+        release = 1.0 - math.exp(-delta_time / RELEASE_TAU)
 
-            velocity = abs(new_amplitudes[i] - self.current_amplitudes[i])
+        coeff = np.where(targets > self.current_amplitudes, attack, release)
+        self.current_amplitudes = self.current_amplitudes + (targets - self.current_amplitudes) * coeff
 
-            adaptive_smooth = self.base_smooth_factor + (velocity * 0.5)  # Use dynamic base
-            adaptive_smooth = min(adaptive_smooth, 0.8)
-
-            time_factor = 1 - math.exp(-delta_time * adaptive_smooth * 60 * frame_rate_factor)
-
-            max_change = 0.1  # Limit amplitude change per frame
-            delta_amplitude = new_amplitudes[i] - self.current_amplitudes[i]
-            delta_amplitude = max(min(delta_amplitude, max_change), -max_change)
-
-            self.current_amplitudes[i] += delta_amplitude * time_factor
-            smoothed.append(self.current_amplitudes[i])
-
-        return smoothed
+        return self.current_amplitudes
 
     def run(self):
         """
@@ -566,28 +350,7 @@ class EqualizerOpenGLThread(threading.Thread):
         self.window_height = video_mode.size.height
         self.frame_rate = video_mode.refresh_rate
 
-        # Calcola l'intervallo FFT basato sul refresh rate e la velocità del buffer audio
-        audio_update_interval = (N_FFT // 2) / 44100.0  # e.g., 1024 / 44100 ≈ 0.0232 s
-        frame_time = 1.0 / self.frame_rate  # e.g., 1/165 ≈ 0.00606 s
-
-        # Usa il più grande tra l'intervallo audio e 2 frame per monitor ad alto refresh
-        if self.frame_rate > 100:
-            self.fft_interval = max(audio_update_interval, 2.0 * frame_time)  # Almeno 2 frame
-        else:
-            self.fft_interval = max(audio_update_interval, frame_time)  # Almeno 1 frame
-
-        print(f"FFT interval set to {self.fft_interval * 1000:.2f} ms (~{1 / self.fft_interval:.1f} Hz)")
-
-        # Adatta il fattore di smoothing base al refresh rate
-        if self.frame_rate >= 144:
-            self.base_smooth_factor = 0.35  # Smooth but responsive for high refresh
-        elif self.frame_rate >= 120:
-            self.base_smooth_factor = 0.30
-        else:
-            self.base_smooth_factor = 0.25  # Default for 60Hz
-
-        print(
-            f"Monitor refresh rate: {self.frame_rate}Hz, FFT interval: {self.fft_interval * 1000:.2f}ms, Smooth factor: {self.base_smooth_factor}")
+        print(f"Monitor refresh rate: {self.frame_rate}Hz (FFT ricalcolata ogni frame)")
 
         window = glfw.create_window(self.window_width, self.window_height, "Audio Visualizer", selected_monitor, None)
         if not window:
@@ -618,11 +381,8 @@ class EqualizerOpenGLThread(threading.Thread):
         # Initialize VBOs
         self.init_vbos()
 
-        frame_duration = 1 / self.frame_rate
-        previous_time = time.time()
-
-        # Timing più preciso
-        last_frame_time = time.perf_counter()
+        # Timing preciso
+        last_frame_time = glfw.get_time()
 
         # -------------------------
         # MAIN LOOP
@@ -638,45 +398,31 @@ class EqualizerOpenGLThread(threading.Thread):
                 message = self._control_queue.get(block=False)
                 self.process_control_message(message)
 
-            # 1) Pull audio data in modo più controllato
-            # Per monitor ad alto refresh rate, processa più chunk per frame
-            audio_chunks_processed = 0
-            max_chunks_per_frame = max(3, int(self.frame_rate / 60))  # Scala con il refresh rate
-
-            while not self._audio_queue.empty() and audio_chunks_processed < max_chunks_per_frame:
+            # 1) Svuota TUTTA la coda audio nel ring buffer: tenendo solo gli ultimi
+            #    N_FFT frame, analizziamo sempre l'audio più recente (niente backlog).
+            while True:
                 try:
-                    audio_buffer = self._audio_queue.get_nowait()
-                    self.audio_accumulator.add_samples(audio_buffer)
-                    audio_chunks_processed += 1
-                except:
+                    self.audio_accumulator.add_samples(self._audio_queue.get_nowait())
+                except queue.Empty:
                     break
 
-            # 2) Calcola FFT a intervalli regolari
-            current_time = time.perf_counter()
-            if (current_time - self.last_fft_time) >= self.fft_interval:
-                fft_window = self.audio_accumulator.get_window_for_fft()
-                if fft_window.size > 0:
-                    if GENERAL_LOG:
-                        print('LOG: Start FFT computation')
+            # 2) Calcola l'FFT a OGNI frame sulla finestra più fresca disponibile
+            fft_window = self.audio_accumulator.get_window_for_fft()
+            if fft_window.size > 0:
+                if GENERAL_LOG:
+                    print('LOG: Start FFT computation')
 
-                    t0 = time.perf_counter()
-                    raw_amplitudes = self.create_equalizer(
-                        audio_data=fft_window,
-                        frequency_bands=self.frequency_bands,
-                        noise_threshold=self._noise_threshold,
-                        channels=self._channels
-                    )
-                    t1 = time.perf_counter()
+                t0 = time.perf_counter()
+                self.target_amplitudes = self.create_equalizer(
+                    audio_data=fft_window,
+                    frequency_bands=self.frequency_bands,
+                    noise_threshold=self._noise_threshold,
+                    channels=self._channels
+                )
+                if PERF_LOGS:
+                    print(f"PERF LOG: FFT took {(time.perf_counter() - t0) * 1000:.3f} ms")
 
-                    if PERF_LOGS:
-                        print(f"PERF LOG: FFT took {(t1 - t0) * 1000:.3f} ms")
-
-                    # Aggiorna i target con smoothing
-                    self.target_amplitudes = raw_amplitudes
-
-                self.last_fft_time = current_time
-
-            # 3) Applica smoothing avanzato
+            # 3) Ballistica attacco/rilascio
             smoothed_amplitudes = self.smooth_amplitudes(self.target_amplitudes, frame_delta)
 
             # 4) Draw bars con valori smoothed
@@ -698,7 +444,6 @@ class EqualizerOpenGLThread(threading.Thread):
         Ferma il thread impostando l'evento di stop.
         """
         self.stop_event.set()
-        self.executor.shutdown(wait=True)
 
     def key_callback(self, window, key, scancode, action, mods):
         """
