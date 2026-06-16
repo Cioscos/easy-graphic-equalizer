@@ -28,7 +28,16 @@ class HelpWindow(ctk.CTkToplevel):
                                  'Frequency bands: Use it to dinamically change the number of the bars showed. Take care that after some number of bars, ' \
                                  'according to your hardware it could become pretty laggy. For high number of bars is highly suggested the full screen visulization\n' \
                                  'Fullscreen button: Open a fullscreen window in which the bars are drawn. This window has high performance so it\'s ' \
-                                 'suggested when you use high number of bands.')
+                                 'suggested when you use high number of bands.\n\n' \
+                                 'Advanced (Fullscreen only)\n\n' \
+                                 'These settings tune the OpenGL fullscreen renderer and have no effect on the in-window preview. ' \
+                                 'You can change them live while fullscreen is running.\n' \
+                                 'dB floor / dB ceiling: The absolute loudness range mapped to bar height. Raise the floor (less negative) ' \
+                                 'or lower the ceiling to make the bars fill up more easily; widen the range for a less sensitive display.\n' \
+                                 'Attack (ms): How quickly bars rise. Lower values snap to transients (kick/snare) almost instantly.\n' \
+                                 'Release (ms): How slowly bars fall. Higher values give a smoother, more readable peak-meter falloff.\n' \
+                                 'Tilt (dB/octave): Spectral emphasis. Negative values boost the lows, positive values boost the highs ' \
+                                 '(e.g. +3 roughly compensates for pink-noise spectra). 0 leaves the response flat.')
         self.explaination.configure(state='disabled')
 
         self.focus()
