@@ -1,3 +1,4 @@
+import os
 import queue
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
@@ -31,6 +32,8 @@ from resource_manager import ResourceManager
 # tenendo solo l'audio più recente, quindi una coda corta evita backlog/latenza.
 MAX_QUEUE_SIZE = 8
 INITIAL_FREQUENCIES_BANDS = 9
+# Estensioni trattate come video (sfondo animato, solo renderer OpenGL).
+VIDEO_EXTENSIONS = ('.mp4', '.avi', '.mov', '.mkv')
 RESIZE_DEBOUNCE_MS = 500
 DOUBLE_LEFT_MOUSE_BUTTON_CLICK = '<Double-Button-1>'
 CLOSE_WINDOW_EVENT = 'WM_DELETE_WINDOW'
@@ -56,6 +59,7 @@ class AudioCaptureGUI(ctk.CTk):
         self.devices = []
         self.canvas_width = self.canvas_height = None
         self.bg_alpha = 0.5
+        self.bg_video_path = None  # path del video di sfondo selezionato (None = immagine)
         self.selected_monitor = None
         self.available_monitors = self.get_available_monitors()
 
@@ -213,11 +217,9 @@ class AudioCaptureGUI(ctk.CTk):
 
     def apply_bg_command(self):
         """
-        Applica l'immagine di sfondo selezionata all'equalizzatore.
-
-        Raises:
-            FileNotFoundError: Se il file non esiste
-            PIL.UnidentifiedImageError: Se il file non è un'immagine valida
+        Applica lo sfondo selezionato (immagine o video) all'equalizzatore.
+        Discrimina per estensione: i video sono gestiti SOLO dal renderer OpenGL
+        (fullscreen); la preview Tkinter mostra un segnaposto testuale.
         """
         filename = self.file_picker.get_filename()
         if not filename:
@@ -228,7 +230,23 @@ class AudioCaptureGUI(ctk.CTk):
             )
             return
 
+        ext = os.path.splitext(filename)[1].lower()
+        if ext in VIDEO_EXTENSIONS:
+            self._apply_video_background(filename)
+        else:
+            self._apply_image_background(filename)
+
+    def _apply_image_background(self, filename: str):
+        """
+        Carica un'immagine come sfondo: aggiorna la preview Tkinter e inoltra
+        l'immagine al renderer OpenGL (set_image, che ferma un eventuale video).
+
+        Raises:
+            FileNotFoundError: Se il file non esiste
+            PIL.UnidentifiedImageError: Se il file non è un'immagine valida
+        """
         try:
+            self.bg_video_path = None  # torna alla modalità immagine
             self.bg_img = Image.open(filename)
             self.bg_img_used = self.bg_img.copy()
             self.bg_img_used.putalpha(int(255 * self.bg_alpha))
@@ -246,6 +264,44 @@ class AudioCaptureGUI(ctk.CTk):
                 message=f'Errore nel caricamento dell\'immagine: {str(e)}',
                 icon="error"
             )
+
+    def _apply_video_background(self, filename: str):
+        """
+        Seleziona un video come sfondo (feature solo-OpenGL). La preview Tkinter
+        non riproduce il video: mostra un segnaposto. Se il fullscreen è già aperto
+        il video parte subito (set_video); altrimenti partirà all'apertura del
+        fullscreen (bg_video passato al costruttore del thread OpenGL).
+        """
+        if not os.path.isfile(filename):
+            CTkMessagebox(
+                title='Errore',
+                message='File non trovato!',
+                icon="error"
+            )
+            return
+        self.bg_video_path = filename
+        self._show_video_placeholder()
+        self.update_video_opengl(filename)
+
+    def _show_video_placeholder(self):
+        """
+        Mostra un segnaposto testuale sul canvas in-window al posto dell'immagine:
+        la riproduzione del video avviene solo nel renderer OpenGL fullscreen.
+        """
+        self.equalizer_canvas.delete('background')
+        self.equalizer_canvas.delete('placeholder')
+        self.equalizer_canvas.update_idletasks()
+        w = max(self.equalizer_canvas.winfo_width(), 1)
+        h = max(self.equalizer_canvas.winfo_height(), 1)
+        self.equalizer_canvas.create_text(
+            w // 2, h // 2,
+            text='Video di sfondo attivo\n(visibile in modalità Fullscreen)',
+            fill='#FFFFFF',
+            font=("Roboto", 16, "bold"),
+            justify=tk.CENTER,
+            tags='placeholder'
+        )
+        self.equalizer_canvas.tag_lower('placeholder')
 
     def _build_settings_tabs(self, parent):
         """
@@ -281,8 +337,8 @@ class AudioCaptureGUI(ctk.CTk):
         # Immagine di sfondo
         self.file_picker = BackgroundFilepickerFrame(
             vis_tab,
-            header_name='Immagine di Sfondo:',
-            placeholder_text='Percorso immagine...',
+            header_name='Sfondo (immagine o video):',
+            placeholder_text='Percorso file...',
             apply_command=self.apply_bg_command
         )
         self.file_picker.pack(side=tk.TOP, padx=10, pady=5, fill=tk.X)
@@ -338,6 +394,8 @@ class AudioCaptureGUI(ctk.CTk):
         self.frequency_slider.pack(side=tk.TOP, padx=10, pady=5, fill=tk.X)
 
     def apply_background(self):
+        # Rimuovi un eventuale segnaposto video: stiamo tornando a un'immagine.
+        self.equalizer_canvas.delete('placeholder')
         self.equalizer_canvas.update_idletasks()
         self.canvas_width, self.canvas_height = self.equalizer_canvas.winfo_width(), self.equalizer_canvas.winfo_height()
         if self.canvas_height != self.bg_img_used.height or self.canvas_width != self.bg_img_used.width:
@@ -449,12 +507,24 @@ class AudioCaptureGUI(ctk.CTk):
             }
             self.equalizer_control_queue.put(message)
 
+    def update_video_opengl(self, path: str):
+        if self.equalizer_opengl_thread:
+            message = {
+                "type": "set_video",
+                "value": path
+            }
+            self.equalizer_control_queue.put(message)
+
     def update_alpha(self, value):
         self.bg_alpha = value
-        self.bg_img_used.putalpha(int(255 * self.bg_alpha))
-        self.canvas_image = ImageTk.PhotoImage(self.bg_img_used)
-        self.equalizer_canvas.create_image(0, 0, anchor=ctk.NW, image=self.canvas_image, tags='background')
-        self.equalizer_canvas.tag_lower('background')
+        # In modalità video la preview in-window mostra il segnaposto, non
+        # l'immagine: evita di ridisegnare lo sfondo. L'alpha vale comunque per il
+        # video, inoltrato al renderer OpenGL (uniform uAlpha).
+        if self.bg_video_path is None:
+            self.bg_img_used.putalpha(int(255 * self.bg_alpha))
+            self.canvas_image = ImageTk.PhotoImage(self.bg_img_used)
+            self.equalizer_canvas.create_image(0, 0, anchor=ctk.NW, image=self.canvas_image, tags='background')
+            self.equalizer_canvas.tag_lower('background')
 
         # send msg to opengl window if active
         self.update_alpha_opengl(value)
@@ -588,6 +658,8 @@ class AudioCaptureGUI(ctk.CTk):
                     n_bands=int(self.frequency_slider.get_value()),
                     control_queue=self.equalizer_control_queue,
                     bg_image=self.bg_img,
+                    bg_alpha=self.bg_alpha,
+                    bg_video=self.bg_video_path,
                     monitor=self.selected_monitor,
                     window_close_callback=self.opengl_window_closed
                 )
@@ -618,6 +690,11 @@ class AudioCaptureGUI(ctk.CTk):
 
     def resize_background(self, canvas: tk.Canvas):
         self.canvas_width, self.canvas_height = canvas.winfo_width(), canvas.winfo_height()
+        # In modalità video la preview mostra il segnaposto: riposizionalo e basta.
+        if self.bg_video_path is not None:
+            self._show_video_placeholder()
+            self.resize_scheduled = False
+            return
         # Resize the image using the resize() method starting from the original image
         self.bg_img_used = self.bg_img.resize((self.canvas_width, self.canvas_height), reducing_gap=2.0).copy()
         self.bg_img_used.putalpha(int(255 * self.bg_alpha))

@@ -13,6 +13,7 @@ from PIL import Image
 from PIL.Image import Transpose
 
 from thread.AudioBufferAccumulator import AudioBufferAccumulator
+from thread.video_decode_thread import VideoDecodeThread
 
 RATE = 44100
 N_FFT = 4096
@@ -37,6 +38,11 @@ TILT_DB_PER_OCT = 0.0
 BAR_WIDTH_FRAC = 0.8    # frazione dello slot occupata dalla barra (il resto è spazio)
 GREEN_SPLIT = 0.5       # sotto questa frazione d'altezza finestra → verde
 YELLOW_SPLIT = 0.8      # tra GREEN_SPLIT e questa → giallo; oltre → rosso
+
+# --- Video di sfondo (solo OpenGL) ---
+# Massimo numero di frame video "recuperabili" in un singolo tick di rendering:
+# evita che, dopo uno stallo (resize, breakpoint), il video parta in fast-forward.
+MAX_CATCHUP_FRAMES = 4
 
 # --- Shader GLSL (OpenGL 3.3 core) ---
 # Barre: rendering instanced. Il quad unitario [0,1]² viene espanso per ogni barra
@@ -77,13 +83,17 @@ void main() {
 
 # Sfondo: quad fullscreen testurizzato. L'alpha è una uniform → nessuna ricreazione
 # della texture quando cambia (niente più re-upload né leak).
+# uFlipV capovolge la coordinata v a costo zero: le immagini sono già flippate in CPU
+# da load_texture (uFlipV=0), mentre i frame video hanno la riga 0 in alto e vanno
+# capovolti qui (uFlipV=1) invece di copiarli flippati a ogni frame.
 _BG_VERTEX_SRC = """
 #version 330 core
 layout(location = 0) in vec2 aPos;        // NDC [-1,1]
 layout(location = 1) in vec2 aTexCoord;
+uniform float uFlipV;                     // 0 = immagine (già flippata), 1 = frame video
 out vec2 vTexCoord;
 void main() {
-    vTexCoord = aTexCoord;
+    vTexCoord = vec2(aTexCoord.x, mix(aTexCoord.y, 1.0 - aTexCoord.y, uFlipV));
     gl_Position = vec4(aPos, 0.0, 1.0);
 }
 """
@@ -134,6 +144,7 @@ class EqualizerOpenGLThread(threading.Thread):
                  monitor=None,
                  bg_image: Optional[Image.Image] = None,
                  bg_alpha: Optional[float] = None,
+                 bg_video: Optional[str] = None,
                  window_close_callback: Callable = None):
         super().__init__()
         self._audio_queue = audio_queue
@@ -160,6 +171,16 @@ class EqualizerOpenGLThread(threading.Thread):
 
         self.stop_event = threading.Event()
         self._background_texture = None
+
+        # --- Stato video di sfondo (solo OpenGL): vedi _start_video/_advance_video ---
+        self._bg_video = bg_video           # path video iniziale (opzionale)
+        self._video_thread = None           # VideoDecodeThread produttore di frame (CPU)
+        self._video_queue = None            # coda corta dei frame decodificati
+        self._video_texture = None          # texture GL dedicata al video (separata dall'immagine)
+        self._video_active = False          # True quando il video sostituisce l'immagine
+        self._video_tex_size = None         # (w, h) texture allocata; None = non ancora creata
+        self._video_frame_interval = 1.0 / 30.0  # 1/fps (aggiornato dai metadati del video)
+        self._video_time_acc = 0.0          # accumulatore di tempo per il pacing del video
 
         self.window_width = self.window_height = None
         self.frame_rate = None
@@ -331,7 +352,7 @@ class EqualizerOpenGLThread(threading.Thread):
         }
         self._bg_uniforms = {
             name: glGetUniformLocation(self._bg_program, name)
-            for name in ("uTexture", "uAlpha")
+            for name in ("uTexture", "uAlpha", "uFlipV")
         }
 
         # --- VAO/VBO barre ---
@@ -409,14 +430,25 @@ class EqualizerOpenGLThread(threading.Thread):
         if num_bars < 1:
             return
 
-        # --- Sfondo ---
-        if self._background_texture:
+        # --- Sfondo: video se attivo e pronto, altrimenti immagine. Stesso shader.
+        #     uFlipV=1 per il video (riga 0 in alto), 0 per l'immagine (già flippata).
+        #     Finché il primo frame video non è pronto si mostra l'ultima immagine
+        #     (transizione morbida, niente flash nero).
+        if self._video_active and self._video_texture:
+            bg_tex, flip = self._video_texture, 1.0
+        elif self._background_texture:
+            bg_tex, flip = self._background_texture, 0.0
+        else:
+            bg_tex, flip = None, 0.0
+
+        if bg_tex:
             glUseProgram(self._bg_program)
             alpha = 1.0 if self._bg_alpha is None else float(self._bg_alpha)
             glActiveTexture(GL_TEXTURE0)
-            glBindTexture(GL_TEXTURE_2D, self._background_texture)
+            glBindTexture(GL_TEXTURE_2D, bg_tex)
             glUniform1i(self._bg_uniforms["uTexture"], 0)
             glUniform1f(self._bg_uniforms["uAlpha"], alpha)
+            glUniform1f(self._bg_uniforms["uFlipV"], flip)
             glBindVertexArray(self._bg_vao)
             glDrawArrays(GL_TRIANGLES, 0, 6)
 
@@ -451,6 +483,9 @@ class EqualizerOpenGLThread(threading.Thread):
         if self._background_texture:
             _safe(lambda: glDeleteTextures(1, [self._background_texture]))
             self._background_texture = None
+        if self._video_texture:
+            _safe(lambda: glDeleteTextures(1, [self._video_texture]))
+            self._video_texture = None
         for vbo in (self._bars_quad_vbo, self._heights_vbo, self._bg_vbo):
             if vbo:
                 _safe(lambda v=vbo: glDeleteBuffers(1, [v]))
@@ -490,7 +525,18 @@ class EqualizerOpenGLThread(threading.Thread):
             self._bg_alpha = message['value']
 
         elif message_type == 'set_image':
+            # L'immagine sostituisce il video: ferma l'eventuale riproduzione.
+            self._stop_video()
             self._bg_image = message['value']
+            self._background_texture = self.load_texture()
+
+        elif message_type == 'set_video':
+            # value = path del file video (stringa). Il decoder vive sul suo thread.
+            self._start_video(message['value'])
+
+        elif message_type == 'clear_video':
+            # Torna all'immagine di sfondo (se presente).
+            self._stop_video()
             self._background_texture = self.load_texture()
 
     def smooth_amplitudes(self, targets, delta_time: float) -> np.ndarray:
@@ -594,6 +640,10 @@ class EqualizerOpenGLThread(threading.Thread):
             self.init_gl_objects()
             self._background_texture = self.load_texture()
 
+            # Se è stato richiesto un video di sfondo all'avvio, avvialo subito.
+            if self._bg_video:
+                self._start_video(self._bg_video)
+
             # Timing preciso
             last_frame_time = glfw.get_time()
 
@@ -638,6 +688,11 @@ class EqualizerOpenGLThread(threading.Thread):
                 # 3) Ballistica attacco/rilascio
                 smoothed_amplitudes = self.smooth_amplitudes(self.target_amplitudes, frame_delta)
 
+                # 3.5) Avanza il video di sfondo (se attivo) e aggiorna la sua texture.
+                #      Pacing disaccoppiato dal refresh: vedi _advance_video.
+                if self._video_active:
+                    self._advance_video(frame_delta)
+
                 # 4) Disegna il frame (sfondo + barre instanced) con i valori smoothed
                 self._render(smoothed_amplitudes)
 
@@ -654,6 +709,8 @@ class EqualizerOpenGLThread(threading.Thread):
             if self.window_close_callback:
                 self.window_close_callback()
         finally:
+            # Ferma il decoder video e il subprocess ffmpeg prima di liberare il GL.
+            self._stop_video()
             # Cleanup garantito: risorse GL, finestra e GLFW (sicuro anche su init parziale).
             self._cleanup_gl()
             if window is not None:
@@ -714,6 +771,131 @@ class EqualizerOpenGLThread(threading.Thread):
         glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, width, height, 0, GL_RGBA,
                      GL_UNSIGNED_BYTE, im_data)
         return texture
+
+    # ------------------------------------------------------------------
+    # Video di sfondo (solo OpenGL). La DECODIFICA (CPU) gira su un thread
+    # dedicato (VideoDecodeThread); QUI, sul thread OpenGL, avviene solo
+    # l'UPLOAD GPU della texture, dove il contesto GL è valido.
+    # ------------------------------------------------------------------
+    def _start_video(self, path: str) -> None:
+        """
+        Avvia (o riavvia) la riproduzione del video di sfondo: ferma un eventuale
+        video in corso, crea la coda dei frame e il thread decoder, e attiva la
+        modalità video. La texture video è allocata pigramente al primo frame
+        (in _upload_video_frame). L'immagine corrente resta visibile finché il
+        primo frame non è pronto. Da chiamare sul thread OpenGL.
+        """
+        self._stop_video()
+        if not path:
+            return
+        self._video_queue = queue.Queue(maxsize=2)
+        self._video_thread = VideoDecodeThread(path, self._video_queue)
+        self._video_thread.start()
+        self._video_tex_size = None
+        self._video_time_acc = 0.0
+        self._video_frame_interval = 1.0 / 30.0
+        self._video_active = True
+
+    def _stop_video(self) -> None:
+        """
+        Ferma il thread decoder (se attivo), svuota la coda dei frame e libera la
+        texture video. Idempotente e centralizzato: usato da set_video (cambio
+        video), clear_video, set_image e dal finally di run(). Richiede un contesto
+        GL valido per glDeleteTextures (tutti i chiamanti girano sul thread GL).
+        """
+        if self._video_thread is not None:
+            self._video_thread.stop()
+            self._video_thread.join(timeout=1.0)
+            self._video_thread = None
+        self._video_queue = None
+        self._video_active = False
+        self._video_tex_size = None
+        self._video_time_acc = 0.0
+        if self._video_texture:
+            try:
+                glDeleteTextures(1, [self._video_texture])
+            except Exception:
+                pass
+            self._video_texture = None
+
+    def _advance_video(self, frame_delta: float) -> None:
+        """
+        Fa avanzare il video in modo indipendente dal refresh del monitor: accumula
+        il tempo trascorso e consuma dalla coda ESATTAMENTE il numero di frame che il
+        tempo concede (uno per intervallo-frame del video), mostrando l'ultimo dei
+        frame consumati. Così il decoder — che si blocca sul put a coda piena — va in
+        back-pressure alla velocità REALE del video. NON si drena tutta la coda (lo
+        facevamo come per l'audio, ma il decoder produce più veloce del realtime →
+        scartando i frame pronti il video accelerava). Se la coda è vuota mantiene il
+        frame già visualizzato. Il pacing è disaccoppiato dall'FFT/dalle barre.
+
+        Args:
+            frame_delta (float): secondi trascorsi dall'ultimo frame di rendering.
+        """
+        if not self._video_active or self._video_queue is None:
+            return
+
+        # fps letto live dal thread decoder (default finché i metadati non sono pronti).
+        if self._video_thread is not None and self._video_thread.fps > 0:
+            self._video_frame_interval = 1.0 / self._video_thread.fps
+
+        self._video_time_acc += frame_delta
+        if self._video_time_acc < self._video_frame_interval:
+            return  # non è ancora ora del prossimo frame: riusa la texture corrente
+
+        # Numero di frame "dovuti" dato il tempo accumulato; clamp anti-fast-forward
+        # dopo uno stallo abnorme (resize/breakpoint), altrimenti sottrai con precisione.
+        steps = int(self._video_time_acc / self._video_frame_interval)
+        if steps > MAX_CATCHUP_FRAMES:
+            steps = MAX_CATCHUP_FRAMES
+            self._video_time_acc = 0.0
+        else:
+            self._video_time_acc -= steps * self._video_frame_interval
+
+        # Consuma ESATTAMENTE `steps` frame e mostra l'ultimo: a refresh > fps si avanza
+        # di 1 frame per intervallo (gli altri tick riusano la texture); a refresh < fps
+        # si saltano i frame in eccesso. NON drenare tutta la coda: il decoder corre più
+        # veloce del realtime e scartarne i frame pronti accelererebbe il video.
+        frame = None
+        for _ in range(steps):
+            try:
+                frame = self._video_queue.get_nowait()
+            except queue.Empty:
+                break
+
+        if frame is not None:
+            self._upload_video_frame(frame)
+
+    def _upload_video_frame(self, frame: np.ndarray) -> None:
+        """
+        Carica un frame video (np.ndarray HxWx3 uint8 RGB, riga 0 in alto) nella
+        texture video. Alloca con glTexImage2D al primo frame o quando cambiano le
+        dimensioni, poi aggiorna in-place con glTexSubImage2D (niente riallocazioni).
+        Il flip verticale è demandato allo shader (uFlipV=1), non copiato in CPU.
+        """
+        h, w = int(frame.shape[0]), int(frame.shape[1])
+
+        # Frame RGB a 3 byte/pixel: con larghezza non multipla di 4 l'allineamento
+        # di default (4) sfalserebbe le righe. Forziamo l'allineamento a 1 byte.
+        glPixelStorei(GL_UNPACK_ALIGNMENT, 1)
+
+        if self._video_texture is None:
+            self._video_texture = glGenTextures(1)
+            glBindTexture(GL_TEXTURE_2D, self._video_texture)
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR)
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR)
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE)
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE)
+            self._video_tex_size = None
+
+        glBindTexture(GL_TEXTURE_2D, self._video_texture)
+        if self._video_tex_size != (w, h):
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, w, h, 0, GL_RGB,
+                         GL_UNSIGNED_BYTE, frame)
+            self._video_tex_size = (w, h)
+        else:
+            glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, w, h, GL_RGB,
+                            GL_UNSIGNED_BYTE, frame)
 
     # Il rendering è ora interamente in _render() (shader + instancing, core 3.3):
     # i vecchi draw_background/draw_bars (pipeline fixed-function) sono stati rimossi.

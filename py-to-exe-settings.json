@@ -68,6 +68,22 @@
   {
    "optionDest": "datas",
    "value": "C:/Users/Claudio/PycharmProjects/easy-graphic-equalizer/glfw3.dll;."
+  },
+  {
+   "optionDest": "collect_all",
+   "value": "imageio_ffmpeg"
+  },
+  {
+   "optionDest": "hiddenimports",
+   "value": "imageio"
+  },
+  {
+   "optionDest": "hiddenimports",
+   "value": "imageio_ffmpeg"
+  },
+  {
+   "optionDest": "hiddenimports",
+   "value": "imageio.plugins.ffmpeg"
   }
  ],
  "nonPyinstallerOptions": {
