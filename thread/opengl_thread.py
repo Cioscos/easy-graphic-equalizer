@@ -697,6 +697,20 @@ class EqualizerOpenGLThread(threading.Thread):
             v = min(max(float(message['value']), 0.0), 1.0)
             self._yellow_split = max(v, self._green_split)
 
+        elif message_type == 'set_bar_width':
+            self._bar_width_frac = float(message['value'])
+
+        elif message_type == 'set_rounded':
+            self._rounded = bool(message['value'])
+
+        elif message_type == 'set_bar_anchor':
+            # True = specchiato dal centro, False = dal basso.
+            self._mirror = bool(message['value'])
+
+        elif message_type == 'set_band_order':
+            # True = simmetrico (bassi al centro), False = standard.
+            self._band_order_symmetric = bool(message['value'])
+
         elif message_type == 'set_image':
             # L'immagine sostituisce il video: ferma l'eventuale riproduzione.
             self._stop_video()
