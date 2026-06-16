@@ -1,237 +1,215 @@
 # gui/animated_button.py
 """
-Pulsante animato con effetti hover e click per CustomTkinter.
+Pulsante animato con effetti hover e click per PySide6.
+
+Riproduce il comportamento del vecchio AnimatedButton CustomTkinter:
+- variazione di luminosità del colore di sfondo su hover/press (animata);
+- leggero effetto di scala ("pop") su hover/click.
+
+La luminosità è animata con una QPropertyAnimation su una proprietà QColor
+(`bg`); la scala con una QPropertyAnimation su una proprietà float (`scale`)
+consumata nel paintEvent tramite una trasformazione del QStylePainter.
 """
-import customtkinter as ctk
+
+from typing import Callable, Optional
+
+from PySide6.QtCore import Property, QEasingCurve, QPropertyAnimation, QSize, Qt
+from PySide6.QtGui import QColor, QIcon, QPainter
+from PySide6.QtWidgets import (
+    QPushButton,
+    QStyle,
+    QStyleOptionButton,
+    QStylePainter,
+)
+
+from gui.theme import COLOR_NEUTRAL
 
 
-class AnimatedButton(ctk.CTkButton):
-    """
-    Pulsante con animazioni fluide per hover e click.
-    Supporta animazioni di scala e colore.
-    """
+class AnimatedButton(QPushButton):
+    """Pulsante con animazioni fluide per hover e click (scala + colore)."""
 
-    def __init__(self,
-                 master,
-                 *args,
-                 animation_duration: int = 200,
-                 hover_scale: float = 1.05,
-                 click_scale: float = 0.95,
-                 **kwargs):
-        """
-        Inizializza il pulsante animato.
-
-        Args:
-            master: Il widget padre
-            animation_duration: Durata dell'animazione in millisecondi
-            hover_scale: Fattore di scala quando il mouse è sopra il pulsante
-            click_scale: Fattore di scala quando il pulsante è cliccato
-            *args, **kwargs: Argomenti passati a CTkButton
-        """
-        self._user_command = kwargs.pop('command', None)
-
-        # Salva i parametri originali
-        self._fg_color_original = kwargs.get('fg_color', '#1f538d')
-        self._hover_color_original = kwargs.get('hover_color', None)
-
-        super().__init__(master, *args, **kwargs)
+    def __init__(
+        self,
+        parent=None,
+        *,
+        text: str = "",
+        command: Optional[Callable] = None,
+        fg_color: str = "#1f538d",
+        hover_color: Optional[str] = None,
+        font=None,
+        corner_radius: int = 10,
+        height: int = 45,
+        enabled: bool = True,
+        icon: Optional[QIcon] = None,
+        icon_size: int = 20,
+        animation_duration: int = 200,
+        hover_scale: float = 1.05,
+        click_scale: float = 0.95,
+    ):
+        super().__init__(text, parent)
 
         # Parametri di animazione
         self.animation_duration = animation_duration
         self.hover_scale = hover_scale
         self.click_scale = click_scale
 
-        # Stato dell'animazione
-        self._animation_running = False
-        self._current_scale = 1.0
-        self._target_scale = 1.0
-        self._animation_step = 0
-        self._animation_start_scale = 1.0
+        # Colore base (l'hover/press sono derivati schiarendo/scurendo)
+        self._base_color = QColor(fg_color)
+        self._hover_color_override = QColor(hover_color) if hover_color else None
+        self._corner_radius = corner_radius
 
-        # Salva le dimensioni originali dopo che il widget è stato creato
-        self.after(100, self._save_original_dimensions)
+        # Stato animato
+        self._scale_val = 1.0
+        self._bg_val = QColor(self._base_color)
 
-        # Override dei metodi di binding per CustomTkinter
-        self._setup_bindings()
+        if font is not None:
+            self.setFont(font)
+        if height:
+            self.setFixedHeight(height)
+        if icon is not None:
+            self.setIcon(icon)
+            self.setIconSize(QSize(icon_size, icon_size))
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setEnabled(enabled)
 
-    def _save_original_dimensions(self):
-        """
-        Salva le dimensioni originali del pulsante dopo l'inizializzazione.
-        """
-        self._original_width = self._current_width if hasattr(self, '_current_width') else self.winfo_width()
-        self._original_height = self._current_height if hasattr(self, '_current_height') else self.winfo_height()
+        if command is not None:
+            self.clicked.connect(lambda: command())
 
-    def _setup_bindings(self):
-        """
-        Configura i binding degli eventi compatibili con CustomTkinter.
-        """
-        # Bind direttamente sul widget principale invece che sul canvas
-        self.bind("<Enter>", self._on_enter, add="+")
-        self.bind("<Leave>", self._on_leave, add="+")
-        self.bind("<Button-1>", self._on_click, add="+")
+        # Animazioni
+        self._scale_anim = QPropertyAnimation(self, b"scale", self)
+        self._scale_anim.setDuration(animation_duration)
+        self._scale_anim.setEasingCurve(QEasingCurve.Type.OutCubic)
 
-    def _on_click(self, event=None):
-        """
-        Gestisce il click completo (press + release).
-        """
-        if self.cget("state") != "disabled":
-            # Animazione di click
-            self._animate_to_scale(self.click_scale)
-            # Programma il ritorno alla scala normale
-            self.after(100, lambda: self._animate_to_scale(self.hover_scale if self._is_hovered() else 1.0))
+        self._color_anim = QPropertyAnimation(self, b"bg", self)
+        self._color_anim.setDuration(animation_duration)
+        self._color_anim.setEasingCurve(QEasingCurve.Type.OutCubic)
 
-            # Invoca il comando
-            if self._user_command:
-                self._user_command()
+        self._apply_stylesheet()
 
-    def _is_hovered(self):
-        """
-        Controlla se il mouse è sopra il widget.
-        """
-        try:
-            x = self.winfo_pointerx()
-            y = self.winfo_pointery()
-            widget_x = self.winfo_rootx()
-            widget_y = self.winfo_rooty()
-            widget_width = self.winfo_width()
-            widget_height = self.winfo_height()
+    # --- Proprietà animabili -------------------------------------------------
+    def _get_scale(self) -> float:
+        return self._scale_val
 
-            return (widget_x <= x <= widget_x + widget_width and
-                    widget_y <= y <= widget_y + widget_height)
-        except Exception:
-            return False
+    def _set_scale(self, value: float) -> None:
+        self._scale_val = value
+        self.update()
 
-    def _on_enter(self, event=None):
-        """
-        Gestisce l'evento di mouse enter.
+    scale = Property(float, _get_scale, _set_scale)
 
-        Args:
-            event: L'evento del mouse (opzionale)
-        """
-        if self.cget("state") != "disabled":
-            self._animate_to_scale(self.hover_scale)
-            # Effetto di luminosità aumentata
-            self._animate_color_brightness(1.1)
+    def _get_bg(self) -> QColor:
+        return self._bg_val
 
-    def _on_leave(self, event=None):
-        """
-        Gestisce l'evento di mouse leave.
+    def _set_bg(self, color: QColor) -> None:
+        self._bg_val = color
+        self._apply_stylesheet()
 
-        Args:
-            event: L'evento del mouse (opzionale)
-        """
-        if self.cget("state") != "disabled":
-            self._animate_to_scale(1.0)
-            # Ripristina il colore originale
-            self.configure(fg_color=self._fg_color_original)
+    bg = Property(QColor, _get_bg, _set_bg)
 
-    def _animate_to_scale(self, target_scale: float):
-        """
-        Avvia l'animazione verso la scala target.
+    # --- Colori derivati -----------------------------------------------------
+    def _hover_brush(self) -> QColor:
+        return self._base_color.lighter(115)
 
-        Args:
-            target_scale: La scala obiettivo
-        """
-        self._target_scale = target_scale
-        if not self._animation_running:
-            self._animation_running = True
-            self._animation_start_scale = self._current_scale
-            self._animation_step = 0
-            self._animate_scale()
+    def _press_brush(self) -> QColor:
+        return self._base_color.darker(110)
 
-    def _animate_scale(self):
-        """
-        Esegue un passo dell'animazione della scala.
-        """
-        if not self._animation_running:
+    def _apply_stylesheet(self) -> None:
+        self.setStyleSheet(
+            f"""
+            QPushButton {{
+                background-color: {self._bg_val.name()};
+                color: white;
+                border: none;
+                border-radius: {self._corner_radius}px;
+                padding: 6px 12px;
+            }}
+            QPushButton:disabled {{
+                background-color: {COLOR_NEUTRAL};
+                color: #cfcfcf;
+            }}
+            """
+        )
+
+    # --- Animazioni ----------------------------------------------------------
+    def _animate_scale(self, target: float) -> None:
+        self._scale_anim.stop()
+        self._scale_anim.setStartValue(self._scale_val)
+        self._scale_anim.setEndValue(target)
+        self._scale_anim.start()
+
+    def _animate_bg(self, target: QColor) -> None:
+        self._color_anim.stop()
+        self._color_anim.setStartValue(QColor(self._bg_val))
+        self._color_anim.setEndValue(target)
+        self._color_anim.start()
+
+    # --- Eventi --------------------------------------------------------------
+    def enterEvent(self, event):
+        if self.isEnabled():
+            self._animate_scale(self.hover_scale)
+            self._animate_bg(self._hover_brush())
+        super().enterEvent(event)
+
+    def leaveEvent(self, event):
+        if self.isEnabled():
+            self._animate_scale(1.0)
+            self._animate_bg(QColor(self._base_color))
+        super().leaveEvent(event)
+
+    def mousePressEvent(self, event):
+        if self.isEnabled() and event.button() == Qt.MouseButton.LeftButton:
+            self._animate_scale(self.click_scale)
+            self._animate_bg(self._press_brush())
+        super().mousePressEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        super().mouseReleaseEvent(event)
+        if self.isEnabled():
+            if self.rect().contains(event.position().toPoint()):
+                self._animate_scale(self.hover_scale)
+                self._animate_bg(self._hover_brush())
+            else:
+                self._animate_scale(1.0)
+                self._animate_bg(QColor(self._base_color))
+
+    def paintEvent(self, event):
+        # Senza scala disegna normalmente.
+        if abs(self._scale_val - 1.0) < 1e-3:
+            super().paintEvent(event)
             return
 
-        # Calcola il progresso dell'animazione (0.0 a 1.0)
-        self._animation_step += 20  # 20ms per frame
-        progress = min(self._animation_step / self.animation_duration, 1.0)
+        option = QStyleOptionButton()
+        self.initStyleOption(option)
 
-        # Usa una funzione di easing (ease-out cubic)
-        eased_progress = 1 - pow(1 - progress, 3)
+        painter = QStylePainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        cx, cy = self.width() / 2.0, self.height() / 2.0
+        painter.translate(cx, cy)
+        painter.scale(self._scale_val, self._scale_val)
+        painter.translate(-cx, -cy)
+        painter.drawControl(QStyle.ControlElement.CE_PushButton, option)
 
-        # Calcola la scala corrente
-        scale_diff = self._target_scale - self._animation_start_scale
-        self._current_scale = self._animation_start_scale + (scale_diff * eased_progress)
-
-        # Applica la scala solo se abbiamo le dimensioni originali
-        if hasattr(self, '_original_width') and hasattr(self, '_original_height'):
-            new_width = int(self._original_width * self._current_scale)
-            new_height = int(self._original_height * self._current_scale)
-
-            # Configura le nuove dimensioni
-            try:
-                self.configure(width=new_width, height=new_height)
-            except Exception:
-                pass  # Ignora errori durante l'animazione
-
-        # Continua l'animazione se non è completa
-        if progress < 1.0:
-            self.after(20, self._animate_scale)
-        else:
-            self._animation_running = False
-
-    def _animate_color_brightness(self, factor: float):
-        """
-        Anima la luminosità del colore del pulsante.
-
-        Args:
-            factor: Fattore di luminosità (1.0 = normale, >1.0 = più chiaro)
-        """
-        try:
-            current_fg_color = self._fg_color_original  # Usa sempre il colore originale attuale
-            if isinstance(current_fg_color, str) and current_fg_color.startswith('#'):
-                # Converti il colore hex in RGB
-                hex_color = current_fg_color.lstrip('#')
-                r, g, b = tuple(int(hex_color[i:i + 2], 16) for i in (0, 2, 4))
-
-                # Applica il fattore di luminosità
-                r = min(int(r * factor), 255)
-                g = min(int(g * factor), 255)
-                b = min(int(b * factor), 255)
-
-                # Converti di nuovo in hex
-                new_color = f'#{r:02x}{g:02x}{b:02x}'
-
-                # Applica il nuovo colore
-                self.configure(fg_color=new_color)
-        except Exception:
-            pass  # Ignora errori nella manipolazione del colore
-
-    def set_animation_params(self, duration: int = None,
-                           hover_scale: float = None,
-                           click_scale: float = None):
-        """
-        Modifica i parametri dell'animazione dinamicamente.
-
-        Args:
-            duration: Nuova durata dell'animazione in ms
-            hover_scale: Nuovo fattore di scala per hover
-            click_scale: Nuovo fattore di scala per click
-        """
+    # --- API pubblica --------------------------------------------------------
+    def set_animation_params(
+        self,
+        duration: Optional[int] = None,
+        hover_scale: Optional[float] = None,
+        click_scale: Optional[float] = None,
+    ) -> None:
+        """Modifica i parametri dell'animazione dinamicamente."""
         if duration is not None:
             self.animation_duration = duration
+            self._scale_anim.setDuration(duration)
+            self._color_anim.setDuration(duration)
         if hover_scale is not None:
             self.hover_scale = hover_scale
         if click_scale is not None:
             self.click_scale = click_scale
 
-    def update_base_colors(self, fg_color: str, hover_color: str = None):
-        """
-        Aggiorna i colori base del pulsante mantenendo le animazioni.
-
-        Args:
-            fg_color: Nuovo colore di base
-            hover_color: Nuovo colore hover (opzionale)
-        """
-        self._fg_color_original = fg_color
-        self._hover_color_original = hover_color
-
-        # Aggiorna immediatamente il colore se non siamo in hover
-        if self._current_scale == 1.0:
-            self.configure(fg_color=fg_color)
-            if hover_color:
-                self.configure(hover_color=hover_color)
+    def update_base_colors(self, fg_color: str, hover_color: Optional[str] = None) -> None:
+        """Aggiorna i colori base del pulsante mantenendo le animazioni."""
+        self._base_color = QColor(fg_color)
+        self._hover_color_override = QColor(hover_color) if hover_color else None
+        # Applica subito il colore base se non siamo in hover.
+        if not self.underMouse():
+            self._color_anim.stop()
+            self._set_bg(QColor(self._base_color))
