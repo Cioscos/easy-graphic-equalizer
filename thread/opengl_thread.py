@@ -639,6 +639,25 @@ class EqualizerOpenGLThread(threading.Thread):
             self._tilt_db_per_oct = message['value']
             self._compute_band_bins()
 
+        elif message_type == 'set_color_mode':
+            self._color_mode = int(message['value'])
+
+        elif message_type == 'set_color_a':
+            self._color_a = tuple(message['value'])
+
+        elif message_type == 'set_color_b':
+            self._color_b = tuple(message['value'])
+
+        elif message_type == 'set_green_split':
+            # green_split è la soglia inferiore: clamp [0,1] e <= yellow_split.
+            v = min(max(float(message['value']), 0.0), 1.0)
+            self._green_split = min(v, self._yellow_split)
+
+        elif message_type == 'set_yellow_split':
+            # yellow_split è la soglia superiore: clamp [0,1] e >= green_split.
+            v = min(max(float(message['value']), 0.0), 1.0)
+            self._yellow_split = max(v, self._green_split)
+
         elif message_type == 'set_image':
             # L'immagine sostituisce il video: ferma l'eventuale riproduzione.
             self._stop_video()
