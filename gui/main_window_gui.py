@@ -90,6 +90,10 @@ class AudioCaptureGUI(QMainWindow):
         self.bars_color_b = (1.0, 0.231, 0.816)
         self.bars_green_split = 0.5
         self.bars_yellow_split = 0.8
+        self.bars_width = 0.8
+        self.bars_rounded = False
+        self.bars_anchor_center = False
+        self.bars_band_symmetric = False
         self.bg_video_path = None  # path del video di sfondo selezionato (None = immagine)
         self.selected_monitor = None
         self.available_monitors = self.get_available_monitors()
@@ -392,6 +396,40 @@ class AudioCaptureGUI(QMainWindow):
         )
         v.addWidget(self.bars_grad_top)
 
+        v.addWidget(self._make_label("Forma", font_label()))
+
+        self.bars_width_slider = SliderCustomFrame(
+            header_name='Larghezza barre:',
+            command=self.update_bar_width,
+            from_=0.1, to=1.0,
+            initial_value=self.bars_width,
+        )
+        v.addWidget(self.bars_width_slider)
+
+        self.bars_rounded_option = OptionMenuCustomFrame(
+            header_name='Cime arrotondate:',
+            values=["No", "Sì"],
+            initial_value="No",
+            command=self.update_rounded,
+        )
+        v.addWidget(self.bars_rounded_option)
+
+        self.bars_anchor_option = OptionMenuCustomFrame(
+            header_name='Ancoraggio:',
+            values=["Dal basso", "Centro"],
+            initial_value="Dal basso",
+            command=self.update_anchor,
+        )
+        v.addWidget(self.bars_anchor_option)
+
+        self.bars_order_option = OptionMenuCustomFrame(
+            header_name='Ordine bande:',
+            values=["Standard", "Simmetrico"],
+            initial_value="Standard",
+            command=self.update_band_order,
+        )
+        v.addWidget(self.bars_order_option)
+
         v.addStretch(1)
 
         # Imposta la visibilità condizionale iniziale (modalità = Classico)
@@ -550,6 +588,26 @@ class AudioCaptureGUI(QMainWindow):
         if self.equalizer_opengl_thread:
             self.equalizer_control_queue.put({"type": "set_yellow_split", "value": float(value)})
 
+    def update_bar_width(self, value):
+        self.bars_width = float(value)
+        if self.equalizer_opengl_thread:
+            self.equalizer_control_queue.put({"type": "set_bar_width", "value": float(value)})
+
+    def update_rounded(self, label):
+        self.bars_rounded = (label == "Sì")
+        if self.equalizer_opengl_thread:
+            self.equalizer_control_queue.put({"type": "set_rounded", "value": self.bars_rounded})
+
+    def update_anchor(self, label):
+        self.bars_anchor_center = (label == "Centro")
+        if self.equalizer_opengl_thread:
+            self.equalizer_control_queue.put({"type": "set_bar_anchor", "value": self.bars_anchor_center})
+
+    def update_band_order(self, label):
+        self.bars_band_symmetric = (label == "Simmetrico")
+        if self.equalizer_opengl_thread:
+            self.equalizer_control_queue.put({"type": "set_band_order", "value": self.bars_band_symmetric})
+
     def update_db_floor(self, value):
         # Parametri DSP del tab Avanzate: solo renderer OpenGL (come bars_alpha).
         if self.equalizer_opengl_thread:
@@ -702,6 +760,10 @@ class AudioCaptureGUI(QMainWindow):
                 color_b=self.bars_color_b,
                 green_split=self.bars_green_split,
                 yellow_split=self.bars_yellow_split,
+                bar_width=self.bars_width,
+                rounded=self.bars_rounded,
+                mirror=self.bars_anchor_center,
+                band_order_symmetric=self.bars_band_symmetric,
                 monitor=self.selected_monitor,
                 window_close_callback=self.opengl_window_closed,
             )
