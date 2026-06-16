@@ -10,3 +10,7 @@ __pycache__
 
 # Standard output folder for auto-py-to-exe
 output/
+
+# Claude Code
+CLAUDE.md
+.claude/
