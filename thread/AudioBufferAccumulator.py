@@ -31,6 +31,8 @@ class AudioBufferAccumulator:
 
         # Buffer circolare preallocato: (window_size, channels)
         self.buffer = np.zeros((window_size, channels), dtype=np.float32)
+        # Scratch preallocato per lo snapshot riallineato (evita allocazioni per-frame)
+        self._snapshot = np.zeros((window_size, channels), dtype=np.float32)
         self.write_pos = 0          # prossima posizione di scrittura
         self.total_written = 0      # frame totali scritti (per sapere se è "pieno")
 
@@ -84,12 +86,16 @@ class AudioBufferAccumulator:
             return np.array([])
 
         if self.write_pos == 0:
-            # Il frame più vecchio è all'indice 0: buffer già in ordine
-            return self.buffer.copy()
+            # Il frame più vecchio è già all'indice 0: buffer già in ordine cronologico.
+            # Restituiamo direttamente il buffer (nessuna copia): lettura e scrittura
+            # avvengono nello stesso thread e lo snapshot è consumato dal renderer prima
+            # del successivo add_samples.
+            return self.buffer
 
-        # Riallinea: dalla posizione di scrittura (più vecchio) fino alla fine,
-        # poi dall'inizio fino alla posizione di scrittura (più recente).
-        return np.concatenate(
-            (self.buffer[self.write_pos:], self.buffer[:self.write_pos]),
-            axis=0
-        )
+        # Riallinea in ordine cronologico dentro uno scratch preallocato (nessuna
+        # allocazione per-frame): da write_pos (più vecchio) fino alla fine, poi
+        # dall'inizio fino a write_pos (più recente).
+        tail = self.window_size - self.write_pos
+        self._snapshot[:tail] = self.buffer[self.write_pos:]
+        self._snapshot[tail:] = self.buffer[:self.write_pos]
+        return self._snapshot
