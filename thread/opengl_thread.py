@@ -44,6 +44,22 @@ YELLOW_SPLIT = 0.8      # tra GREEN_SPLIT e questa → giallo; oltre → rosso
 # evita che, dopo uno stallo (resize, breakpoint), il video parta in fast-forward.
 MAX_CATCHUP_FRAMES = 4
 
+
+def arrange_symmetric(heights: np.ndarray) -> np.ndarray:
+    """
+    Riordina le altezze per la disposizione simmetrica "bassi al centro":
+    specchia lo spettro attorno al centro, così la banda più bassa finisce nei
+    due bar centrali e la più alta ai due bordi. Raddoppia il numero di barre.
+
+    Esempio: [b0, b1, b2] -> [b2, b1, b0, b0, b1, b2].
+
+    Funzione pura (nessuno stato GL): testabile a sé.
+    """
+    if heights.shape[0] == 0:
+        return heights
+    return np.concatenate([heights[::-1], heights])
+
+
 # --- Shader GLSL (OpenGL 3.3 core) ---
 # Barre: rendering instanced. Il quad unitario [0,1]² viene espanso per ogni barra
 # usando gl_InstanceID e l'altezza per-istanza; nessuna geometria generata dalla CPU.
