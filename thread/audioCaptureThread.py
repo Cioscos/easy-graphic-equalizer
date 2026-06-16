@@ -8,14 +8,13 @@ RATE = 44100
 
 # Define a thread for capturing audio
 class AudioCaptureThread(threading.Thread):
-    def __init__(self, audio_queue, device, debug=False, defaultSampleRate=RATE, channels=2):
+    def __init__(self, audio_queue, device, debug=False, channels=2):
         threading.Thread.__init__(self)
         self._running = True
         self.device = device
         self.audio_queue = audio_queue
         self._debug = debug
         self.channels = channels
-        self._defaultSampleRate = defaultSampleRate
         if self._debug:
             print("Audio capture thread created")
 

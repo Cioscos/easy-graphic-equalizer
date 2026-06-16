@@ -1,7 +1,8 @@
 from typing import Callable, Optional
 import customtkinter as tk
 
-FONT = ("Roboto", 12)
+from gui.theme import FONT_BODY
+
 
 class OptionMenuCustomFrame(tk.CTkFrame):
     """
@@ -28,8 +29,8 @@ class OptionMenuCustomFrame(tk.CTkFrame):
                                             values=values,
                                             command=command,
                                             variable=self._optionmenu_var,
-                                            font=FONT,
-                                            dropdown_font=FONT)
+                                            font=FONT_BODY,
+                                            dropdown_font=FONT_BODY)
         self._option_menu.pack(side=tk.LEFT, fill=tk.X, expand=True)
 
     def get_value(self) -> str:

@@ -173,7 +173,6 @@ class EqualizerTkinterThread(threading.Thread):
             self.noise_threshold = message["value"]
         elif message['type'] == 'set_frequency_bands':
             self.frequency_bands = self.generate_frequency_bands(message["value"])
-            # print(self.frequency_bands)
             self.previous_amplitudes = [0] * len(self.frequency_bands)
             self.bars.clear()
             self.canvas.delete("bars")

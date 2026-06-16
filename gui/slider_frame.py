@@ -3,6 +3,8 @@ from enum import Enum
 
 import customtkinter as tk
 
+from gui.theme import FONT_BODY
+
 
 class SliderCustomFrame(tk.CTkFrame):
     """
@@ -62,7 +64,7 @@ class SliderCustomFrame(tk.CTkFrame):
         # Warning message
         self.warning_label = tk.CTkLabel(self,
                                 text=warning_text,
-                                font=("Roboto", 12),
+                                font=FONT_BODY,
                                 text_color='yellow',
                                 justify='center')
 

@@ -131,8 +131,6 @@ class EqualizerOpenGLThread(threading.Thread):
                  channels=2,
                  n_bands=9,
                  control_queue=None,
-                 workers: int = 5,
-                 auto_workers: bool = False,
                  monitor=None,
                  bg_image: Optional[Image.Image] = None,
                  bg_alpha: Optional[float] = None,
@@ -147,10 +145,6 @@ class EqualizerOpenGLThread(threading.Thread):
         self._bg_image = bg_image
         self._bg_alpha = bg_alpha
         self.window_close_callback = window_close_callback
-        # NOTA: `workers`/`auto_workers` sono accettati per compatibilità con il
-        # chiamante ma ora inerti: l'FFT è single-pass vettoriale (rfft) e non usa
-        # più ProcessPoolExecutor, che aggiungeva latenza (pickling/IPC) ricalcolando
-        # l'intera FFT per ogni worker.
 
         # Oggetti OpenGL (creati in init_gl_objects una volta attivo il contesto)
         self._bars_program = None
@@ -498,10 +492,6 @@ class EqualizerOpenGLThread(threading.Thread):
         elif message_type == 'set_image':
             self._bg_image = message['value']
             self._background_texture = self.load_texture()
-
-        elif message_type in ('set_workers', 'set_auto_workers'):
-            # Inerti: la multiprocessing è stata rimossa dal percorso FFT.
-            pass
 
     def smooth_amplitudes(self, targets, delta_time: float) -> np.ndarray:
         """

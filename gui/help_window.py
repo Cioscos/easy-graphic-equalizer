@@ -1,5 +1,7 @@
 import customtkinter as ctk
 
+from gui.theme import FONT_TITLE
+
 
 class HelpWindow(ctk.CTkToplevel):
     def __init__(self, *args, **kwargs):
@@ -9,7 +11,7 @@ class HelpWindow(ctk.CTkToplevel):
 
         self.title('Help')
 
-        self.label = ctk.CTkLabel(self, text="How to use", font=("Roboto", 18, "bold"))
+        self.label = ctk.CTkLabel(self, text="How to use", font=FONT_TITLE)
         self.label.pack(pady=10)
 
         self.explaination = ctk.CTkTextbox(self, wrap='word')
