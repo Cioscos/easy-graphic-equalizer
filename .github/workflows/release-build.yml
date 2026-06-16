@@ -1,0 +1,74 @@
+name: Build & attach release executables
+
+# Builds the one-dir PyInstaller bundle on Windows and Linux and attaches the
+# zipped artifacts to the GitHub release that triggered the run.
+#
+# Triggers:
+#   * release: published   -> automatic, when you publish a release (e.g. 1.4.0)
+#   * workflow_dispatch     -> manual, to (re)build & attach to an existing tag
+#
+# NOTE: for the `release` trigger to fire, this file must live on the default
+# branch (master). On a feature branch it only runs via workflow_dispatch.
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing release tag to build & attach (e.g. 1.4.0)"
+        required: true
+
+permissions:
+  contents: write   # needed to upload assets to the release
+
+jobs:
+  build:
+    name: Build (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            artifact: sound-wave-windows
+          - os: ubuntu-22.04        # oldest supported Ubuntu -> widest glibc compatibility
+            artifact: sound-wave-linux
+    steps:
+      - name: Resolve release tag
+        id: tag
+        shell: bash
+        run: echo "tag=${{ github.event.release.tag_name || inputs.tag }}" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout tagged source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.tag.outputs.tag }}
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+
+      - name: Sync dependencies
+        run: uv sync --frozen
+
+      - name: Build one-dir bundle (PyInstaller)
+        run: uv run --with pyinstaller pyinstaller --noconfirm sound-wave.spec
+
+      - name: Package bundle (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          cd dist
+          zip -r "../${{ matrix.artifact }}.zip" "sound wave"
+
+      - name: Package bundle (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: Compress-Archive -Path "dist/sound wave" -DestinationPath "${{ matrix.artifact }}.zip"
+
+      - name: Attach artifact to release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "${{ steps.tag.outputs.tag }}" "${{ matrix.artifact }}.zip" --clobber --repo "${{ github.repository }}"
