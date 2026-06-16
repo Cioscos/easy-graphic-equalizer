@@ -1,0 +1,13 @@
+# Fine-riga: LF sia nel repository sia nel working tree (il repo è già LF).
+# Sovrascrive eventuali core.autocrlf locali, così niente più churn CRLF/LF.
+* text=auto eol=lf
+
+# File binari: non normalizzare mai le fine-riga.
+*.png  binary
+*.jpg  binary
+*.jpeg binary
+*.gif  binary
+*.ico  binary
+*.dll  binary
+*.exe  binary
+*.zip  binary
