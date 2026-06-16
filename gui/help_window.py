@@ -25,7 +25,14 @@ _HELP_TEXT = (
     "Attack (ms): How quickly bars rise. Lower values snap to transients (kick/snare) almost instantly.\n"
     "Release (ms): How slowly bars fall. Higher values give a smoother, more readable peak-meter falloff.\n"
     "Tilt (dB/octave): Spectral emphasis. Negative values boost the lows, positive values boost the highs "
-    "(e.g. +3 roughly compensates for pink-noise spectra). 0 leaves the response flat."
+    "(e.g. +3 roughly compensates for pink-noise spectra). 0 leaves the response flat.\n\n"
+    "Bars (Fullscreen only)\n\n"
+    "Color mode: Classic (green/yellow/red with adjustable yellow/red thresholds), Solid colour, "
+    "vertical Gradient (base to tip), or Spectrum (hue follows each bar's frequency).\n"
+    "Bar width: From thin, airy bars to thick, packed ones.\n"
+    "Rounded caps: Smooth the top of each bar.\n"
+    "Anchor: Grow bars from the bottom, or mirrored from a centre line.\n"
+    "Band order: Standard, or Symmetric with the bass in the centre mirrored out to the edges."
 )
 
 
