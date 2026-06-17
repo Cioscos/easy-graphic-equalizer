@@ -361,6 +361,61 @@ void main() {
 }
 """
 
+# --- Shader "strip": curve continue (oscilloscopio, linea/area) via triangle strip ---
+# Vertici (x, y, mag): x,y in [0,1] (posizione); mag in [0,1] (magnitudine per la
+# colorazione). Replica le 4 modalità colore del Blocco 1: Classico per mag, Gradiente
+# verticale per y, Spettro per x, Tinta unica.
+_STRIP_VERTEX_SRC = """
+#version 330 core
+layout(location = 0) in vec2 aPos;    // (x, y) in [0,1]
+layout(location = 1) in float aMag;   // magnitudine per la colorazione [0,1]
+out float vX;
+out float vY;
+out float vMag;
+void main() {
+    vX = aPos.x;
+    vY = aPos.y;
+    vMag = aMag;
+    gl_Position = vec4(aPos.x * 2.0 - 1.0, aPos.y * 2.0 - 1.0, 0.0, 1.0);
+}
+"""
+
+_STRIP_FRAGMENT_SRC = """
+#version 330 core
+in float vX;
+in float vY;
+in float vMag;
+out vec4 FragColor;
+uniform int uColorMode;
+uniform vec3 uColorA;
+uniform vec3 uColorB;
+uniform float uGreenSplit;
+uniform float uYellowSplit;
+uniform float uBarsAlpha;
+
+vec3 hsv2rgb(vec3 c) {
+    vec4 K = vec4(1.0, 2.0 / 3.0, 1.0 / 3.0, 3.0);
+    vec3 p = abs(fract(c.xxx + K.xyz) * 6.0 - K.www);
+    return c.z * mix(K.xxx, clamp(p - K.xxx, 0.0, 1.0), c.y);
+}
+
+void main() {
+    vec3 col;
+    if (uColorMode == 0) {
+        if (vMag < uGreenSplit)            col = vec3(0.0, 1.0, 0.0);
+        else if (vMag < uYellowSplit)      col = vec3(1.0, 1.0, 0.0);
+        else                               col = vec3(1.0, 0.0, 0.0);
+    } else if (uColorMode == 1) {
+        col = uColorA;
+    } else if (uColorMode == 2) {
+        col = mix(uColorA, uColorB, vY);
+    } else {
+        col = hsv2rgb(vec3(vX * 0.83, 0.9, 1.0));
+    }
+    FragColor = vec4(col, uBarsAlpha);
+}
+"""
+
 
 class EqualizerOpenGLThread(threading.Thread):
     """
@@ -811,6 +866,29 @@ class EqualizerOpenGLThread(threading.Thread):
             for name in ("uTex", "uIntensity")
         }
 
+        # --- Programma "strip" (oscilloscopio + linea/area): VBO (x,y,mag) interleaved ---
+        self._strip_program = compileProgram(
+            compileShader(_STRIP_VERTEX_SRC, GL_VERTEX_SHADER),
+            compileShader(_STRIP_FRAGMENT_SRC, GL_FRAGMENT_SHADER),
+        )
+        self._strip_uniforms = {
+            name: glGetUniformLocation(self._strip_program, name)
+            for name in ("uColorMode", "uColorA", "uColorB",
+                         "uGreenSplit", "uYellowSplit", "uBarsAlpha")
+        }
+        self._strip_vao = glGenVertexArrays(1)
+        glBindVertexArray(self._strip_vao)
+        self._strip_vbo = glGenBuffers(1)
+        glBindBuffer(GL_ARRAY_BUFFER, self._strip_vbo)
+        stride = 3 * 4  # x, y, mag
+        glEnableVertexAttribArray(0)
+        glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, stride, ctypes.c_void_p(0))
+        glEnableVertexAttribArray(1)
+        glVertexAttribPointer(1, 1, GL_FLOAT, GL_FALSE, stride, ctypes.c_void_p(2 * 4))
+        glVertexAttribDivisor(1, 0)
+        self._strip_capacity = 0
+        glBindVertexArray(0)
+
     def _ensure_heights_capacity(self, n: int) -> None:
         """
         Garantisce che il VBO delle altezze possa contenere almeno n float.
@@ -829,6 +907,39 @@ class EqualizerOpenGLThread(threading.Thread):
         glBindBuffer(GL_ARRAY_BUFFER, self._peaks_vbo)
         glBufferData(GL_ARRAY_BUFFER, n * 4, None, GL_STREAM_DRAW)
         self._peaks_capacity = n
+
+    def _ensure_strip_capacity(self, n_verts: int) -> None:
+        """Garantisce che il VBO strip contenga almeno n_verts vertici (3 float l'uno)."""
+        if n_verts <= self._strip_capacity:
+            return
+        glBindBuffer(GL_ARRAY_BUFFER, self._strip_vbo)
+        glBufferData(GL_ARRAY_BUFFER, n_verts * 3 * 4, None, GL_STREAM_DRAW)
+        self._strip_capacity = n_verts
+
+    def _upload_strip(self, verts: np.ndarray) -> None:
+        """Carica i vertici (M, 3) float32 nel VBO strip e imposta self._draw_count."""
+        if verts.dtype != np.float32 or not verts.flags["C_CONTIGUOUS"]:
+            verts = np.ascontiguousarray(verts, dtype=np.float32)
+        n = int(verts.shape[0])
+        self._draw_count = n
+        if n == 0:
+            return
+        self._ensure_strip_capacity(n)
+        glBindBuffer(GL_ARRAY_BUFFER, self._strip_vbo)
+        glBufferSubData(GL_ARRAY_BUFFER, 0, verts.nbytes, verts)
+
+    def _draw_strip(self) -> None:
+        """Disegna la geometria strip corrente (triangle strip) col programma strip."""
+        glUseProgram(self._strip_program)
+        glUniform1i(self._strip_uniforms["uColorMode"], int(self._color_mode))
+        glUniform3f(self._strip_uniforms["uColorA"], *self._color_a)
+        glUniform3f(self._strip_uniforms["uColorB"], *self._color_b)
+        glUniform1f(self._strip_uniforms["uGreenSplit"], self._green_split)
+        glUniform1f(self._strip_uniforms["uYellowSplit"], self._yellow_split)
+        glUniform1f(self._strip_uniforms["uBarsAlpha"], float(self._bars_alpha))
+        glBindVertexArray(self._strip_vao)
+        glDrawArrays(GL_TRIANGLE_STRIP, 0, int(self._draw_count))
+        glBindVertexArray(0)
 
     def _display_heights(self, heights: np.ndarray) -> np.ndarray:
         """
@@ -1051,14 +1162,14 @@ class EqualizerOpenGLThread(threading.Thread):
         self._bloom_texs = []
         self._bloom_fbos = []
         self._bloom_size = None
-        for vbo in (self._bars_quad_vbo, self._heights_vbo, self._bg_vbo, self._peaks_vbo):
+        for vbo in (self._bars_quad_vbo, self._heights_vbo, self._bg_vbo, self._peaks_vbo, self._strip_vbo):
             if vbo:
                 _safe(lambda v=vbo: glDeleteBuffers(1, [v]))
-        for vao in (self._bars_vao, self._bg_vao, self._caps_vao):
+        for vao in (self._bars_vao, self._bg_vao, self._caps_vao, self._strip_vao):
             if vao:
                 _safe(lambda v=vao: glDeleteVertexArrays(1, [v]))
         for prog in (self._bars_program, self._bg_program, self._caps_program,
-                     self._blur_program, self._bloom_composite_program):
+                     self._blur_program, self._bloom_composite_program, self._strip_program):
             if prog:
                 _safe(lambda p=prog: glDeleteProgram(p))
 
@@ -1069,6 +1180,8 @@ class EqualizerOpenGLThread(threading.Thread):
         self._peaks_vbo = self._caps_vao = self._caps_program = None
         self._peaks_capacity = 0
         self._blur_program = self._bloom_composite_program = None
+        self._strip_vbo = self._strip_vao = self._strip_program = None
+        self._strip_capacity = 0
 
     def process_control_message(self, message):
         """
