@@ -210,10 +210,11 @@ _BG_VERTEX_SRC = """
 layout(location = 0) in vec2 aPos;        // NDC [-1,1]
 layout(location = 1) in vec2 aTexCoord;
 uniform float uFlipV;                     // 0 = immagine (già flippata), 1 = frame video
+uniform float uBgZoom;                    // zoom additivo sul beat (0 = nessuno)
 out vec2 vTexCoord;
 void main() {
     vTexCoord = vec2(aTexCoord.x, mix(aTexCoord.y, 1.0 - aTexCoord.y, uFlipV));
-    gl_Position = vec4(aPos, 0.0, 1.0);
+    gl_Position = vec4(aPos * (1.0 + uBgZoom), 0.0, 1.0);
 }
 """
 
@@ -555,7 +556,7 @@ class EqualizerOpenGLThread(threading.Thread):
         }
         self._bg_uniforms = {
             name: glGetUniformLocation(self._bg_program, name)
-            for name in ("uTexture", "uAlpha", "uFlipV")
+            for name in ("uTexture", "uAlpha", "uFlipV", "uBgZoom")
         }
 
         # --- VAO/VBO barre ---
@@ -694,6 +695,7 @@ class EqualizerOpenGLThread(threading.Thread):
             glUniform1i(self._bg_uniforms["uTexture"], 0)
             glUniform1f(self._bg_uniforms["uAlpha"], alpha)
             glUniform1f(self._bg_uniforms["uFlipV"], flip)
+            glUniform1f(self._bg_uniforms["uBgZoom"], float(self._beat_pulse * self._beat_intensity))
             glBindVertexArray(self._bg_vao)
             glDrawArrays(GL_TRIANGLES, 0, 6)
 
@@ -1073,6 +1075,15 @@ class EqualizerOpenGLThread(threading.Thread):
                     )
                     if PERF_LOGS:
                         print(f"PERF LOG: FFT took {(time.perf_counter() - t0) * 1000:.3f} ms")
+
+                # Beat detection + inviluppo di pulsazione (Blocco 2)
+                if self._beat_enabled:
+                    if self._detect_beat(self._bass_energy, frame_delta):
+                        self._beat_pulse = 1.0
+                    # decadimento esponenziale frame-rate-independent
+                    self._beat_pulse *= math.exp(-frame_delta / BEAT_DECAY_TAU)
+                else:
+                    self._beat_pulse = 0.0
 
                 # 3) Ballistica attacco/rilascio
                 smoothed_amplitudes = self.smooth_amplitudes(self.target_amplitudes, frame_delta)
