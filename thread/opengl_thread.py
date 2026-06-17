@@ -62,7 +62,9 @@ MODE_BARS = 0          # barre verticali (attuale, default)
 MODE_RADIAL = 1        # barre disposte in cerchio
 MODE_OSCILLOSCOPE = 2  # forma d'onda nel tempo
 MODE_LINE = 3          # spettro a linea / area riempita
-OSC_GAIN = 2.5         # guadagno display dell'oscilloscopio (campione → frazione schermo)
+OSC_GAIN = 1.4         # guadagno display dell'oscilloscopio (campione → frazione mezza-altezza)
+OSC_MAX_AMP = 0.45     # ampiezza max attorno al centro (clamp, frazione mezza-altezza)
+OSC_DISPLAY_POINTS = 512  # campioni mostrati dopo il trigger (finestra breve = onda leggibile)
 DEFAULT_INNER_RADIUS = 0.18      # raggio del foro centrale (radiale), frazione del raggio max
 DEFAULT_LINE_THICKNESS = 0.012   # spessore nastro (osc/linea), frazione altezza finestra
 
@@ -105,57 +107,54 @@ def trigger_align(waveform: np.ndarray) -> np.ndarray:
     return waveform[int(idx[0]):]
 
 
-def build_spectrum_strip(heights: np.ndarray, fill: bool, thickness: float) -> np.ndarray:
+def build_band_strip(xs: np.ndarray, ybot: np.ndarray, ytop: np.ndarray) -> np.ndarray:
     """
-    Triangle strip per la modalità Linea/Area dalle ampiezze per banda.
-    fill=True: area tra base (y=0) e curva. fill=False: nastro di spessore verticale
-    'thickness' centrato sulla curva. Restituisce (2N, 3) float32 con (x, y, mag) per
-    vertice: x in [0,1] (Spettro), mag = altezza banda (Classico/Gradiente). Ordine
-    adatto a GL_TRIANGLE_STRIP. Funzione pura.
+    Triangle strip che riempie la banda tra le curve ybot..ytop alle ascisse xs. Usato
+    dall'Area (ybot=0) e dall'oscilloscopio specchiato (banda simmetrica attorno al centro).
+    Restituisce (2N, 2) float32 (x, y) per GL_TRIANGLE_STRIP. Funzione pura.
     """
-    n = int(heights.shape[0])
-    if n == 0:
-        return np.zeros((0, 3), dtype=np.float32)
-    xs = np.linspace(0.0, 1.0, n, dtype=np.float32) if n > 1 else np.array([0.5], dtype=np.float32)
-    h = np.clip(heights.astype(np.float32), 0.0, 1.0)
-    if fill:
-        bot = np.zeros(n, dtype=np.float32)
-        top = h
-    else:
-        half = 0.5 * float(thickness)
-        top = np.clip(h + half, 0.0, 1.0)
-        bot = np.clip(h - half, 0.0, 1.0)
-    verts = np.empty((2 * n, 3), dtype=np.float32)
-    verts[0::2, 0] = xs;  verts[0::2, 1] = bot;  verts[0::2, 2] = h
-    verts[1::2, 0] = xs;  verts[1::2, 1] = top;  verts[1::2, 2] = h
+    n = int(xs.shape[0])
+    if n < 2:
+        return np.zeros((0, 2), dtype=np.float32)
+    xsf = xs.astype(np.float32)
+    verts = np.empty((2 * n, 2), dtype=np.float32)
+    verts[0::2, 0] = xsf;  verts[0::2, 1] = np.clip(ybot, 0.0, 1.0)
+    verts[1::2, 0] = xsf;  verts[1::2, 1] = np.clip(ytop, 0.0, 1.0)
     return verts
 
 
-def build_waveform_strip(waveform: np.ndarray, mirror: bool,
-                         thickness: float, gain: float) -> np.ndarray:
+def build_line_ribbon(xs: np.ndarray, ys: np.ndarray,
+                      half_thickness: float, aspect: float) -> np.ndarray:
     """
-    Triangle strip per l'oscilloscopio. mono: nastro di spessore 'thickness' attorno
-    alla curva y = 0.5 + sample*gain. specchiato: area simmetrica tra 0.5 ± |sample|*gain.
-    Restituisce (2M, 3) float32 (x, y, mag): mag = |sample|*gain*2 in [0,1]
-    (Classico/Gradiente), x in [0,1] (Spettro). Funzione pura.
+    Nastro (triangle strip) di spessore COSTANTE in pixel lungo la polilinea (xs, ys) in
+    [0,1]^2, con offset perpendicolare alla direzione della curva e correzione dell'aspect
+    ratio: la larghezza resta costante anche sui tratti ripidi (niente "spike" verticali
+    sugli zero-crossing). Usato dallo spettro a linea e dall'oscilloscopio mono.
+    Restituisce (2N, 2) float32 (x, y) per GL_TRIANGLE_STRIP. Funzione pura.
     """
-    m = int(waveform.shape[0])
-    if m == 0:
-        return np.zeros((0, 3), dtype=np.float32)
-    xs = np.linspace(0.0, 1.0, m, dtype=np.float32) if m > 1 else np.array([0.5], dtype=np.float32)
-    s = np.clip(waveform.astype(np.float32) * float(gain), -0.5, 0.5)
-    mag = np.clip(np.abs(s) * 2.0, 0.0, 1.0)
-    if mirror:
-        a = np.abs(s)
-        top = np.clip(0.5 + a, 0.0, 1.0)
-        bot = np.clip(0.5 - a, 0.0, 1.0)
-    else:
-        half = 0.5 * float(thickness)
-        top = np.clip(0.5 + s + half, 0.0, 1.0)
-        bot = np.clip(0.5 + s - half, 0.0, 1.0)
-    verts = np.empty((2 * m, 3), dtype=np.float32)
-    verts[0::2, 0] = xs;  verts[0::2, 1] = bot;  verts[0::2, 2] = mag
-    verts[1::2, 0] = xs;  verts[1::2, 1] = top;  verts[1::2, 2] = mag
+    n = int(xs.shape[0])
+    if n < 2:
+        return np.zeros((0, 2), dtype=np.float32)
+    xsf = xs.astype(np.float32)
+    ysf = ys.astype(np.float32)
+    asp = max(float(aspect), 1e-6)
+    X = xsf * asp
+    Y = ysf
+    # Tangente per-vertice (differenze centrali; estremi unilaterali) in spazio aspect-corretto
+    tx = np.empty(n, dtype=np.float32)
+    ty = np.empty(n, dtype=np.float32)
+    tx[1:-1] = X[2:] - X[:-2];  ty[1:-1] = Y[2:] - Y[:-2]
+    tx[0] = X[1] - X[0];        ty[0] = Y[1] - Y[0]
+    tx[-1] = X[-1] - X[-2];     ty[-1] = Y[-1] - Y[-2]
+    L = np.sqrt(tx * tx + ty * ty)
+    L[L < 1e-9] = 1e-9
+    nax = -ty / L            # normale (spazio aspect-corretto)
+    nay = tx / L
+    ox = (half_thickness * nax / asp).astype(np.float32)   # ritorno a x in [0,1]
+    oy = (half_thickness * nay).astype(np.float32)
+    verts = np.empty((2 * n, 2), dtype=np.float32)
+    verts[0::2, 0] = np.clip(xsf - ox, 0.0, 1.0);  verts[0::2, 1] = np.clip(ysf - oy, 0.0, 1.0)
+    verts[1::2, 0] = np.clip(xsf + ox, 0.0, 1.0);  verts[1::2, 1] = np.clip(ysf + oy, 0.0, 1.0)
     return verts
 
 
@@ -368,14 +367,11 @@ void main() {
 _STRIP_VERTEX_SRC = """
 #version 330 core
 layout(location = 0) in vec2 aPos;    // (x, y) in [0,1]
-layout(location = 1) in float aMag;   // magnitudine per la colorazione [0,1]
 out float vX;
 out float vY;
-out float vMag;
 void main() {
     vX = aPos.x;
     vY = aPos.y;
-    vMag = aMag;
     gl_Position = vec4(aPos.x * 2.0 - 1.0, aPos.y * 2.0 - 1.0, 0.0, 1.0);
 }
 """
@@ -384,7 +380,6 @@ _STRIP_FRAGMENT_SRC = """
 #version 330 core
 in float vX;
 in float vY;
-in float vMag;
 out vec4 FragColor;
 uniform int uColorMode;
 uniform vec3 uColorA;
@@ -402,8 +397,8 @@ vec3 hsv2rgb(vec3 c) {
 void main() {
     vec3 col;
     if (uColorMode == 0) {
-        if (vMag < uGreenSplit)            col = vec3(0.0, 1.0, 0.0);
-        else if (vMag < uYellowSplit)      col = vec3(1.0, 1.0, 0.0);
+        if (vY < uGreenSplit)              col = vec3(0.0, 1.0, 0.0);
+        else if (vY < uYellowSplit)        col = vec3(1.0, 1.0, 0.0);
         else                               col = vec3(1.0, 0.0, 0.0);
     } else if (uColorMode == 1) {
         col = uColorA;
@@ -880,12 +875,8 @@ class EqualizerOpenGLThread(threading.Thread):
         glBindVertexArray(self._strip_vao)
         self._strip_vbo = glGenBuffers(1)
         glBindBuffer(GL_ARRAY_BUFFER, self._strip_vbo)
-        stride = 3 * 4  # x, y, mag
         glEnableVertexAttribArray(0)
-        glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, stride, ctypes.c_void_p(0))
-        glEnableVertexAttribArray(1)
-        glVertexAttribPointer(1, 1, GL_FLOAT, GL_FALSE, stride, ctypes.c_void_p(2 * 4))
-        glVertexAttribDivisor(1, 0)
+        glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 2 * 4, ctypes.c_void_p(0))
         self._strip_capacity = 0
         glBindVertexArray(0)
 
@@ -909,11 +900,11 @@ class EqualizerOpenGLThread(threading.Thread):
         self._peaks_capacity = n
 
     def _ensure_strip_capacity(self, n_verts: int) -> None:
-        """Garantisce che il VBO strip contenga almeno n_verts vertici (3 float l'uno)."""
+        """Garantisce che il VBO strip contenga almeno n_verts vertici (2 float l'uno: x, y)."""
         if n_verts <= self._strip_capacity:
             return
         glBindBuffer(GL_ARRAY_BUFFER, self._strip_vbo)
-        glBufferData(GL_ARRAY_BUFFER, n_verts * 3 * 4, None, GL_STREAM_DRAW)
+        glBufferData(GL_ARRAY_BUFFER, n_verts * 2 * 4, None, GL_STREAM_DRAW)
         self._strip_capacity = n_verts
 
     def _upload_strip(self, verts: np.ndarray) -> None:
@@ -1083,24 +1074,45 @@ class EqualizerOpenGLThread(threading.Thread):
         e (per le modalità a banda) self._bar_heights. Ritorna False se non c'è nulla da
         disegnare (audio/bande vuoti).
         """
+        aspect = float(self._fb_width) / max(float(self._fb_height), 1.0)
+
         if self._mode == MODE_OSCILLOSCOPE:
             if waveform is None or waveform.size == 0:
                 self._draw_count = 0
                 return False
-            wf = trigger_align(np.ascontiguousarray(waveform, dtype=np.float32))
-            verts = build_waveform_strip(wf, self._osc_mirror, self._line_thickness, OSC_GAIN)
+            # Finestra breve sui campioni più RECENTI (bassa latenza), allineata allo
+            # zero-crossing: poche oscillazioni, onda leggibile e reattiva.
+            recent = np.ascontiguousarray(waveform[-2 * OSC_DISPLAY_POINTS:], dtype=np.float32)
+            wf = trigger_align(recent)[:OSC_DISPLAY_POINTS]
+            if wf.shape[0] < 2:
+                self._draw_count = 0
+                return False
+            xs = np.linspace(0.0, 1.0, wf.shape[0], dtype=np.float32)
+            s = np.clip(wf * OSC_GAIN, -OSC_MAX_AMP, OSC_MAX_AMP).astype(np.float32)
+            if self._osc_mirror:
+                verts = build_band_strip(xs, 0.5 - np.abs(s), 0.5 + np.abs(s))
+            else:
+                verts = build_line_ribbon(xs, 0.5 + s, 0.5 * self._line_thickness, aspect)
             self._upload_strip(verts)
             return self._draw_count > 0
 
         # Modalità basate sulle bande: applica la disposizione (es. simmetrica).
         heights = self._display_heights(heights)
-        if int(heights.shape[0]) < 1:
+        n = int(heights.shape[0])
+        if n < 1:
             self._draw_count = 0
             return False
         self._bar_heights = heights  # per il peak-cap (solo Barre)
         if self._mode == MODE_LINE:
-            verts = build_spectrum_strip(np.ascontiguousarray(heights, dtype=np.float32),
-                                         self._fill, self._line_thickness)
+            if n < 2:
+                self._draw_count = 0
+                return False
+            h = np.clip(np.ascontiguousarray(heights, dtype=np.float32), 0.0, 1.0)
+            xs = np.linspace(0.0, 1.0, n, dtype=np.float32)
+            if self._fill:
+                verts = build_band_strip(xs, np.zeros(n, dtype=np.float32), h)
+            else:
+                verts = build_line_ribbon(xs, h, 0.5 * self._line_thickness, aspect)
             self._upload_strip(verts)
         else:  # MODE_BARS o MODE_RADIAL: VBO altezze per-istanza
             self._upload_heights(heights)
