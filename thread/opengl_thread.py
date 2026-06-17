@@ -57,6 +57,15 @@ BAR_WIDTH_FRAC = 0.8    # frazione dello slot occupata dalla barra (il resto è 
 GREEN_SPLIT = 0.5       # sotto questa frazione d'altezza finestra → verde
 YELLOW_SPLIT = 0.8      # tra GREEN_SPLIT e questa → giallo; oltre → rosso
 
+# --- Modalità di visualizzazione (Blocco 3) ---
+MODE_BARS = 0          # barre verticali (attuale, default)
+MODE_RADIAL = 1        # barre disposte in cerchio
+MODE_OSCILLOSCOPE = 2  # forma d'onda nel tempo
+MODE_LINE = 3          # spettro a linea / area riempita
+OSC_GAIN = 2.5         # guadagno display dell'oscilloscopio (campione → frazione schermo)
+DEFAULT_INNER_RADIUS = 0.18      # raggio del foro centrale (radiale), frazione del raggio max
+DEFAULT_LINE_THICKNESS = 0.012   # spessore nastro (osc/linea), frazione altezza finestra
+
 # --- Video di sfondo (solo OpenGL) ---
 # Massimo numero di frame video "recuperabili" in un singolo tick di rendering:
 # evita che, dopo uno stallo (resize, breakpoint), il video parta in fast-forward.
@@ -326,6 +335,11 @@ class EqualizerOpenGLThread(threading.Thread):
                  beat_sensitivity: float = BEAT_SENSITIVITY,
                  bloom_enabled: bool = False,
                  bloom_intensity: float = BLOOM_INTENSITY,
+                 mode: int = MODE_BARS,
+                 inner_radius: float = DEFAULT_INNER_RADIUS,
+                 line_thickness: float = DEFAULT_LINE_THICKNESS,
+                 fill: bool = True,
+                 osc_mirror: bool = False,
                  window_close_callback: Callable = None):
         super().__init__()
         self._audio_queue = audio_queue
@@ -391,6 +405,15 @@ class EqualizerOpenGLThread(threading.Thread):
         self._bloom_enabled = bool(bloom_enabled)
         self._bloom_intensity = float(bloom_intensity)
 
+        # --- Modalità di visualizzazione (Blocco 3). Default = Barre (look attuale). ---
+        self._mode = int(mode)
+        self._inner_radius = float(inner_radius)
+        self._line_thickness = float(line_thickness)
+        self._fill = bool(fill)
+        self._osc_mirror = bool(osc_mirror)
+        self._draw_count = 0          # vertici (strip) o istanze (barre/radiale) da disegnare
+        self._bar_heights = np.zeros(self._n_bands, dtype=np.float32)  # altezze disposte (peak-cap)
+
         # Oggetti OpenGL (creati in init_gl_objects una volta attivo il contesto)
         self._bars_program = None
         self._bg_program = None
@@ -414,6 +437,11 @@ class EqualizerOpenGLThread(threading.Thread):
         self._bloom_fbos = []      # 2 FBO ping-pong
         self._bloom_texs = []      # 2 texture half-res (GL_RGB16F)
         self._bloom_size = None    # (w, h) half-res; None = non ancora creati
+        self._strip_program = None
+        self._strip_vao = None
+        self._strip_vbo = None
+        self._strip_capacity = 0      # n. di vertici allocati nel VBO strip
+        self._strip_uniforms = {}
 
         self.stop_event = threading.Event()
         self._background_texture = None
@@ -1060,6 +1088,21 @@ class EqualizerOpenGLThread(threading.Thread):
 
         elif message_type == 'set_bloom_intensity':
             self._bloom_intensity = float(message['value'])
+
+        elif message_type == 'set_viz_mode':
+            self._mode = int(message['value'])
+
+        elif message_type == 'set_inner_radius':
+            self._inner_radius = float(message['value'])
+
+        elif message_type == 'set_line_thickness':
+            self._line_thickness = float(message['value'])
+
+        elif message_type == 'set_fill':
+            self._fill = bool(message['value'])
+
+        elif message_type == 'set_osc_mirror':
+            self._osc_mirror = bool(message['value'])
 
         elif message_type == 'set_image':
             # L'immagine sostituisce il video: ferma l'eventuale riproduzione.
