@@ -43,6 +43,12 @@ DEFAULT_PEAKCAP_COLOR = (1.0, 1.0, 1.0)   # bianco
 PEAKCAP_HOLD = 0.5        # s di hold prima della caduta
 PEAKCAP_FALL = 0.8        # frazione di altezza al secondo
 CAP_THICKNESS = 0.012     # spessore del trattino (frazione di altezza finestra)
+BEAT_INTENSITY = 0.08         # zoom massimo dello sfondo (8%)
+BEAT_SENSITIVITY = 1.5        # energia > 1.5x media -> beat
+BEAT_EMA_ALPHA = 0.08         # reattività della media mobile dell'energia
+BEAT_REFRACTORY = 0.15        # s minimi tra due beat
+BEAT_DECAY_TAU = 0.18         # s, decadimento dell'inviluppo di pulsazione
+BASS_CUTOFF_HZ = 150.0        # energia bassi: potenza FFT sotto questa frequenza
 
 # --- Aspetto delle barre (ex magic number) ---
 BAR_WIDTH_FRAC = 0.8    # frazione dello slot occupata dalla barra (il resto è spazio)
@@ -277,6 +283,9 @@ class EqualizerOpenGLThread(threading.Thread):
                  peakcap_color: tuple = DEFAULT_PEAKCAP_COLOR,
                  peakcap_hold: float = PEAKCAP_HOLD,
                  peakcap_fall: float = PEAKCAP_FALL,
+                 beat_enabled: bool = False,
+                 beat_intensity: float = BEAT_INTENSITY,
+                 beat_sensitivity: float = BEAT_SENSITIVITY,
                  window_close_callback: Callable = None):
         super().__init__()
         self._audio_queue = audio_queue
@@ -325,6 +334,18 @@ class EqualizerOpenGLThread(threading.Thread):
         # numero di barre visualizzate (es. ordine simmetrico).
         self._peaks = np.zeros(self._n_bands, dtype=np.float32)
         self._peak_age = np.zeros(self._n_bands, dtype=np.float32)
+
+        # --- Beat pulse (Blocco 2) ---
+        self._beat_enabled = bool(beat_enabled)
+        self._beat_intensity = float(beat_intensity)
+        self._beat_sensitivity = float(beat_sensitivity)
+        self._beat_ema = 0.0          # media mobile dell'energia bassi
+        self._beat_refractory = 0.0   # timer refrattario (s)
+        self._beat_pulse = 0.0        # inviluppo di pulsazione [0,1]
+        self._bass_energy = 0.0       # energia bassi dell'ultimo frame (da create_equalizer)
+        # Maschera dei bin FFT sotto il cutoff bassi (per l'energia beat)
+        _freqs = np.fft.rfftfreq(N_FFT, 1.0 / RATE)
+        self._bass_mask = _freqs < BASS_CUTOFF_HZ
 
         # Oggetti OpenGL (creati in init_gl_objects una volta attivo il contesto)
         self._bars_program = None
@@ -479,6 +500,9 @@ class EqualizerOpenGLThread(threading.Thread):
         power = (np.abs(spectrum) / self._window_gain) ** 2
         # Media della potenza tra i canali
         power = power.mean(axis=0)                              # (N_FFT//2 + 1,)
+
+        # Energia bassi (per la beat detection): somma potenza sotto il cutoff.
+        self._bass_energy = float(np.sum(power[self._bass_mask]))
 
         # Somma dell'energia per banda in O(bin) (niente loop di maschere)
         band_power = np.bincount(
@@ -878,6 +902,21 @@ class EqualizerOpenGLThread(threading.Thread):
         self._peaks[falling] -= self._peakcap_fall * dt
         np.clip(self._peaks, 0.0, 1.0, out=self._peaks)
         return self._peaks
+
+    def _detect_beat(self, energy: float, dt: float) -> bool:
+        """
+        Onset detection sull'energia dei bassi: beat quando l'energia supera
+        media_mobile * sensibilità, fuori dal periodo refrattario. Aggiorna la
+        media mobile (EMA) e il timer refrattario. Puro/testabile.
+        """
+        self._beat_refractory = max(0.0, self._beat_refractory - dt)
+        if self._beat_ema <= 1e-12:
+            self._beat_ema = energy
+        is_beat = (energy > self._beat_ema * self._beat_sensitivity) and (self._beat_refractory <= 0.0)
+        self._beat_ema += (energy - self._beat_ema) * BEAT_EMA_ALPHA
+        if is_beat:
+            self._beat_refractory = BEAT_REFRACTORY
+        return is_beat
 
     def smooth_amplitudes(self, targets, delta_time: float) -> np.ndarray:
         """
