@@ -115,6 +115,7 @@ class AudioCaptureGUI(QMainWindow):
         self.viz_line_thickness = 0.012
         self.viz_fill = True
         self.viz_osc_mirror = False
+        self.viz_osc_smoothing = 0.5
         self.bg_video_path = None  # path del video di sfondo selezionato (None = immagine)
         self.selected_monitor = None
         self.available_monitors = self.get_available_monitors()
@@ -493,6 +494,14 @@ class AudioCaptureGUI(QMainWindow):
             command=self.update_osc_mirror)
         v.addWidget(self.viz_osc_mirror_option)
 
+        self.viz_osc_smooth_slider = SliderCustomFrame(
+            header_name='Fluidità (oscill.):',
+            command=self.update_osc_smoothing,
+            from_=0.0, to=1.0,
+            initial_value=self.viz_osc_smoothing,
+        )
+        v.addWidget(self.viz_osc_smooth_slider)
+
         v.addStretch(1)
 
         # Imposta la visibilità condizionale iniziale (modalità = Classico)
@@ -700,6 +709,7 @@ class AudioCaptureGUI(QMainWindow):
         self.viz_thickness_slider.setVisible(osc or line)
         self.viz_fill_option.setVisible(line)
         self.viz_osc_mirror_option.setVisible(osc)
+        self.viz_osc_smooth_slider.setVisible(osc)
         # Peak-cap: solo in modalità Barre (tab "✨ Effetti")
         self.fx_peakcap_label.setVisible(bars)
         self.fx_peakcap_option.setVisible(bars)
@@ -729,6 +739,11 @@ class AudioCaptureGUI(QMainWindow):
         self.viz_osc_mirror = (label == "Sì")
         if self.equalizer_opengl_thread:
             self.equalizer_control_queue.put({"type": "set_osc_mirror", "value": self.viz_osc_mirror})
+
+    def update_osc_smoothing(self, value):
+        self.viz_osc_smoothing = float(value)
+        if self.equalizer_opengl_thread:
+            self.equalizer_control_queue.put({"type": "set_osc_smoothing", "value": float(value)})
 
     def update_color_a(self, rgb):
         self.bars_color_a = rgb
@@ -985,6 +1000,7 @@ class AudioCaptureGUI(QMainWindow):
                 line_thickness=self.viz_line_thickness,
                 fill=self.viz_fill,
                 osc_mirror=self.viz_osc_mirror,
+                osc_smoothing=self.viz_osc_smoothing,
                 monitor=self.selected_monitor,
                 window_close_callback=self.opengl_window_closed,
             )

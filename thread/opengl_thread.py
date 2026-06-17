@@ -65,6 +65,7 @@ MODE_LINE = 3          # spettro a linea / area riempita
 OSC_GAIN = 1.4         # guadagno display dell'oscilloscopio (campione → frazione mezza-altezza)
 OSC_MAX_AMP = 0.45     # ampiezza max attorno al centro (clamp, frazione mezza-altezza)
 OSC_DISPLAY_POINTS = 512  # campioni mostrati dopo il trigger (finestra breve = onda leggibile)
+OSC_SMOOTH_MAX_TAU = 0.12  # s: a smoothing=1 l'onda si assesta in ~questo tempo (0 = nessuno)
 DEFAULT_INNER_RADIUS = 0.18      # raggio del foro centrale (radiale), frazione del raggio max
 DEFAULT_LINE_THICKNESS = 0.012   # spessore nastro (osc/linea), frazione altezza finestra
 
@@ -387,6 +388,7 @@ uniform vec3 uColorB;
 uniform float uGreenSplit;
 uniform float uYellowSplit;
 uniform float uBarsAlpha;
+uniform float uVerticalFade;  // 1 = alpha sfuma con vY (area morbida), 0 = piena
 
 vec3 hsv2rgb(vec3 c) {
     vec4 K = vec4(1.0, 2.0 / 3.0, 1.0 / 3.0, 3.0);
@@ -407,7 +409,8 @@ void main() {
     } else {
         col = hsv2rgb(vec3(vX * 0.83, 0.9, 1.0));
     }
-    FragColor = vec4(col, uBarsAlpha);
+    float a = uBarsAlpha * mix(1.0, vY, uVerticalFade);
+    FragColor = vec4(col, a);
 }
 """
 
@@ -475,6 +478,7 @@ class EqualizerOpenGLThread(threading.Thread):
                  line_thickness: float = DEFAULT_LINE_THICKNESS,
                  fill: bool = True,
                  osc_mirror: bool = False,
+                 osc_smoothing: float = 0.5,
                  window_close_callback: Callable = None):
         super().__init__()
         self._audio_queue = audio_queue
@@ -546,6 +550,8 @@ class EqualizerOpenGLThread(threading.Thread):
         self._line_thickness = float(line_thickness)
         self._fill = bool(fill)
         self._osc_mirror = bool(osc_mirror)
+        self._osc_smoothing = float(osc_smoothing)   # 0 = nessuno, 1 = max (vedi OSC_SMOOTH_MAX_TAU)
+        self._osc_prev = None         # ultima onda visualizzata (smoothing temporale)
         self._draw_count = 0          # vertici (strip) o istanze (barre/radiale) da disegnare
         self._bar_heights = np.zeros(self._n_bands, dtype=np.float32)  # altezze disposte (peak-cap)
 
@@ -869,7 +875,7 @@ class EqualizerOpenGLThread(threading.Thread):
         self._strip_uniforms = {
             name: glGetUniformLocation(self._strip_program, name)
             for name in ("uColorMode", "uColorA", "uColorB",
-                         "uGreenSplit", "uYellowSplit", "uBarsAlpha")
+                         "uGreenSplit", "uYellowSplit", "uBarsAlpha", "uVerticalFade")
         }
         self._strip_vao = glGenVertexArrays(1)
         glBindVertexArray(self._strip_vao)
@@ -928,6 +934,9 @@ class EqualizerOpenGLThread(threading.Thread):
         glUniform1f(self._strip_uniforms["uGreenSplit"], self._green_split)
         glUniform1f(self._strip_uniforms["uYellowSplit"], self._yellow_split)
         glUniform1f(self._strip_uniforms["uBarsAlpha"], float(self._bars_alpha))
+        # Area (Linea/Area con riempimento): alpha che sfuma verso la base → niente "muro".
+        fade = 1.0 if (self._mode == MODE_LINE and self._fill) else 0.0
+        glUniform1f(self._strip_uniforms["uVerticalFade"], fade)
         glBindVertexArray(self._strip_vao)
         glDrawArrays(GL_TRIANGLE_STRIP, 0, int(self._draw_count))
         glBindVertexArray(0)
@@ -1068,7 +1077,7 @@ class EqualizerOpenGLThread(threading.Thread):
         glBindBuffer(GL_ARRAY_BUFFER, self._heights_vbo)
         glBufferSubData(GL_ARRAY_BUFFER, 0, heights.nbytes, heights)
 
-    def _prepare_mode_geometry(self, heights: np.ndarray, waveform) -> bool:
+    def _prepare_mode_geometry(self, heights: np.ndarray, waveform, dt: float) -> bool:
         """
         Costruisce e carica la geometria della modalità corrente; imposta self._draw_count
         e (per le modalità a banda) self._bar_heights. Ritorna False se non c'è nulla da
@@ -1089,6 +1098,13 @@ class EqualizerOpenGLThread(threading.Thread):
                 return False
             xs = np.linspace(0.0, 1.0, wf.shape[0], dtype=np.float32)
             s = np.clip(wf * OSC_GAIN, -OSC_MAX_AMP, OSC_MAX_AMP).astype(np.float32)
+            # Smoothing temporale (EMA frame-rate-independent): onda meno nervosa.
+            if (self._osc_smoothing > 0.0 and self._osc_prev is not None
+                    and self._osc_prev.shape == s.shape):
+                tau = self._osc_smoothing * OSC_SMOOTH_MAX_TAU
+                a = 1.0 - math.exp(-max(dt, 1e-6) / tau) if tau > 1e-6 else 1.0
+                s = (self._osc_prev + (s - self._osc_prev) * a).astype(np.float32)
+            self._osc_prev = s
             if self._osc_mirror:
                 verts = build_band_strip(xs, 0.5 - np.abs(s), 0.5 + np.abs(s))
             else:
@@ -1141,7 +1157,7 @@ class EqualizerOpenGLThread(threading.Thread):
         glClear(GL_COLOR_BUFFER_BIT)
 
         # Geometria della modalità corrente (upload VBO + self._draw_count).
-        if not self._prepare_mode_geometry(heights, waveform):
+        if not self._prepare_mode_geometry(heights, waveform, dt):
             self._draw_background()
             return
 
@@ -1336,6 +1352,10 @@ class EqualizerOpenGLThread(threading.Thread):
 
         elif message_type == 'set_viz_mode':
             self._mode = int(message['value'])
+            self._osc_prev = None   # azzera lo storico smoothing al cambio modalità
+
+        elif message_type == 'set_osc_smoothing':
+            self._osc_smoothing = float(message['value'])
 
         elif message_type == 'set_inner_radius':
             self._inner_radius = float(message['value'])
