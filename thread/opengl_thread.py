@@ -87,6 +87,78 @@ def arrange_symmetric(heights: np.ndarray) -> np.ndarray:
     return np.concatenate([heights[::-1], heights])
 
 
+def trigger_align(waveform: np.ndarray) -> np.ndarray:
+    """
+    Allinea la finestra al primo zero-crossing in salita entro il primo quarto, per
+    stabilizzare l'oscilloscopio (riduce lo scorrimento frame-su-frame). Se non trova
+    un crossing, restituisce la finestra invariata. Funzione pura (nessuno stato GL).
+    """
+    n = int(waveform.shape[0])
+    if n < 3:
+        return waveform
+    limit = max(1, n // 4)
+    seg = waveform[:limit + 1]
+    rising = (seg[:-1] <= 0.0) & (seg[1:] > 0.0)
+    idx = np.nonzero(rising)[0]
+    if idx.size == 0:
+        return waveform
+    return waveform[int(idx[0]):]
+
+
+def build_spectrum_strip(heights: np.ndarray, fill: bool, thickness: float) -> np.ndarray:
+    """
+    Triangle strip per la modalità Linea/Area dalle ampiezze per banda.
+    fill=True: area tra base (y=0) e curva. fill=False: nastro di spessore verticale
+    'thickness' centrato sulla curva. Restituisce (2N, 3) float32 con (x, y, mag) per
+    vertice: x in [0,1] (Spettro), mag = altezza banda (Classico/Gradiente). Ordine
+    adatto a GL_TRIANGLE_STRIP. Funzione pura.
+    """
+    n = int(heights.shape[0])
+    if n == 0:
+        return np.zeros((0, 3), dtype=np.float32)
+    xs = np.linspace(0.0, 1.0, n, dtype=np.float32) if n > 1 else np.array([0.5], dtype=np.float32)
+    h = np.clip(heights.astype(np.float32), 0.0, 1.0)
+    if fill:
+        bot = np.zeros(n, dtype=np.float32)
+        top = h
+    else:
+        half = 0.5 * float(thickness)
+        top = np.clip(h + half, 0.0, 1.0)
+        bot = np.clip(h - half, 0.0, 1.0)
+    verts = np.empty((2 * n, 3), dtype=np.float32)
+    verts[0::2, 0] = xs;  verts[0::2, 1] = bot;  verts[0::2, 2] = h
+    verts[1::2, 0] = xs;  verts[1::2, 1] = top;  verts[1::2, 2] = h
+    return verts
+
+
+def build_waveform_strip(waveform: np.ndarray, mirror: bool,
+                         thickness: float, gain: float) -> np.ndarray:
+    """
+    Triangle strip per l'oscilloscopio. mono: nastro di spessore 'thickness' attorno
+    alla curva y = 0.5 + sample*gain. specchiato: area simmetrica tra 0.5 ± |sample|*gain.
+    Restituisce (2M, 3) float32 (x, y, mag): mag = |sample|*gain*2 in [0,1]
+    (Classico/Gradiente), x in [0,1] (Spettro). Funzione pura.
+    """
+    m = int(waveform.shape[0])
+    if m == 0:
+        return np.zeros((0, 3), dtype=np.float32)
+    xs = np.linspace(0.0, 1.0, m, dtype=np.float32) if m > 1 else np.array([0.5], dtype=np.float32)
+    s = np.clip(waveform.astype(np.float32) * float(gain), -0.5, 0.5)
+    mag = np.clip(np.abs(s) * 2.0, 0.0, 1.0)
+    if mirror:
+        a = np.abs(s)
+        top = np.clip(0.5 + a, 0.0, 1.0)
+        bot = np.clip(0.5 - a, 0.0, 1.0)
+    else:
+        half = 0.5 * float(thickness)
+        top = np.clip(0.5 + s + half, 0.0, 1.0)
+        bot = np.clip(0.5 + s - half, 0.0, 1.0)
+    verts = np.empty((2 * m, 3), dtype=np.float32)
+    verts[0::2, 0] = xs;  verts[0::2, 1] = bot;  verts[0::2, 2] = mag
+    verts[1::2, 0] = xs;  verts[1::2, 1] = top;  verts[1::2, 2] = mag
+    return verts
+
+
 # --- Shader GLSL (OpenGL 3.3 core) ---
 # Barre: rendering instanced. Il quad unitario [0,1]² viene espanso per ogni barra
 # usando gl_InstanceID e l'altezza per-istanza; nessuna geometria generata dalla CPU.
