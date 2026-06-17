@@ -49,6 +49,8 @@ BEAT_EMA_ALPHA = 0.08         # reattività della media mobile dell'energia
 BEAT_REFRACTORY = 0.15        # s minimi tra due beat
 BEAT_DECAY_TAU = 0.18         # s, decadimento dell'inviluppo di pulsazione
 BASS_CUTOFF_HZ = 150.0        # energia bassi: potenza FFT sotto questa frequenza
+BLOOM_INTENSITY = 1.0     # forza del composito additivo
+BLOOM_BLUR_PASSES = 1     # iterazioni di blur (H+V) per il bloom
 
 # --- Aspetto delle barre (ex magic number) ---
 BAR_WIDTH_FRAC = 0.8    # frazione dello slot occupata dalla barra (il resto è spazio)
@@ -287,6 +289,8 @@ class EqualizerOpenGLThread(threading.Thread):
                  beat_enabled: bool = False,
                  beat_intensity: float = BEAT_INTENSITY,
                  beat_sensitivity: float = BEAT_SENSITIVITY,
+                 bloom_enabled: bool = False,
+                 bloom_intensity: float = BLOOM_INTENSITY,
                  window_close_callback: Callable = None):
         super().__init__()
         self._audio_queue = audio_queue
@@ -348,6 +352,10 @@ class EqualizerOpenGLThread(threading.Thread):
         _freqs = np.fft.rfftfreq(N_FFT, 1.0 / RATE)
         self._bass_mask = _freqs < BASS_CUTOFF_HZ
 
+        # --- Bloom (Blocco 2) ---
+        self._bloom_enabled = bool(bloom_enabled)
+        self._bloom_intensity = float(bloom_intensity)
+
         # Oggetti OpenGL (creati in init_gl_objects una volta attivo il contesto)
         self._bars_program = None
         self._bg_program = None
@@ -364,6 +372,13 @@ class EqualizerOpenGLThread(threading.Thread):
         self._peaks_vbo = None
         self._peaks_capacity = 0
         self._caps_uniforms = {}
+        self._blur_program = None
+        self._bloom_composite_program = None
+        self._blur_uniforms = {}
+        self._bloom_uniforms = {}
+        self._bloom_fbos = []      # 2 FBO ping-pong
+        self._bloom_texs = []      # 2 texture half-res (GL_RGB16F)
+        self._bloom_size = None    # (w, h) half-res; None = non ancora creati
 
         self.stop_event = threading.Event()
         self._background_texture = None
@@ -879,6 +894,12 @@ class EqualizerOpenGLThread(threading.Thread):
 
         elif message_type == 'set_beat_sensitivity':
             self._beat_sensitivity = float(message['value'])
+
+        elif message_type == 'set_bloom_enabled':
+            self._bloom_enabled = bool(message['value'])
+
+        elif message_type == 'set_bloom_intensity':
+            self._bloom_intensity = float(message['value'])
 
         elif message_type == 'set_image':
             # L'immagine sostituisce il video: ferma l'eventuale riproduzione.
