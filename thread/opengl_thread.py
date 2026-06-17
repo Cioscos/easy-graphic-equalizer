@@ -749,6 +749,18 @@ class EqualizerOpenGLThread(threading.Thread):
             # True = simmetrico (bassi al centro), False = standard.
             self._band_order_symmetric = bool(message['value'])
 
+        elif message_type == 'set_peakcap_enabled':
+            self._peakcap_enabled = bool(message['value'])
+
+        elif message_type == 'set_peakcap_color':
+            self._peakcap_color = tuple(message['value'])
+
+        elif message_type == 'set_peakcap_hold':
+            self._peakcap_hold = float(message['value'])
+
+        elif message_type == 'set_peakcap_fall':
+            self._peakcap_fall = float(message['value'])
+
         elif message_type == 'set_image':
             # L'immagine sostituisce il video: ferma l'eventuale riproduzione.
             self._stop_video()
