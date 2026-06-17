@@ -202,6 +202,41 @@ uniform vec3 uCapColor;
 void main() { FragColor = vec4(uCapColor, 1.0); }
 """
 
+# --- Shader bloom: blur gaussiano separabile + composito additivo (quad fullscreen) ---
+_FULLSCREEN_VERTEX_SRC = """
+#version 330 core
+layout(location = 0) in vec2 aPos;
+layout(location = 1) in vec2 aTexCoord;
+out vec2 vUV;
+void main() { vUV = aTexCoord; gl_Position = vec4(aPos, 0.0, 1.0); }
+"""
+
+_BLUR_FRAGMENT_SRC = """
+#version 330 core
+in vec2 vUV;
+out vec4 FragColor;
+uniform sampler2D uTex;
+uniform vec2 uDir;   // (1/w, 0) orizzontale oppure (0, 1/h) verticale
+void main() {
+    float w[5] = float[](0.227027, 0.1945946, 0.1216216, 0.054054, 0.016216);
+    vec3 c = texture(uTex, vUV).rgb * w[0];
+    for (int i = 1; i < 5; i++) {
+        c += texture(uTex, vUV + uDir * float(i)).rgb * w[i];
+        c += texture(uTex, vUV - uDir * float(i)).rgb * w[i];
+    }
+    FragColor = vec4(c, 1.0);
+}
+"""
+
+_BLOOM_COMPOSITE_FRAGMENT_SRC = """
+#version 330 core
+in vec2 vUV;
+out vec4 FragColor;
+uniform sampler2D uTex;
+uniform float uIntensity;
+void main() { FragColor = vec4(texture(uTex, vUV).rgb * uIntensity, 1.0); }
+"""
+
 # Sfondo: quad fullscreen testurizzato. L'alpha è una uniform → nessuna ricreazione
 # della texture quando cambia (niente più re-upload né leak).
 # uFlipV capovolge la coordinata v a costo zero: le immagini sono già flippate in CPU
@@ -646,6 +681,23 @@ class EqualizerOpenGLThread(threading.Thread):
         self._peaks_capacity = 0
         glBindVertexArray(0)
 
+        # --- Programmi bloom (riusano il VAO dello sfondo come quad fullscreen) ---
+        self._blur_program = compileProgram(
+            compileShader(_FULLSCREEN_VERTEX_SRC, GL_VERTEX_SHADER),
+            compileShader(_BLUR_FRAGMENT_SRC, GL_FRAGMENT_SHADER),
+        )
+        self._bloom_composite_program = compileProgram(
+            compileShader(_FULLSCREEN_VERTEX_SRC, GL_VERTEX_SHADER),
+            compileShader(_BLOOM_COMPOSITE_FRAGMENT_SRC, GL_FRAGMENT_SHADER),
+        )
+        self._blur_uniforms = {
+            name: glGetUniformLocation(self._blur_program, name) for name in ("uTex", "uDir")
+        }
+        self._bloom_uniforms = {
+            name: glGetUniformLocation(self._bloom_composite_program, name)
+            for name in ("uTex", "uIntensity")
+        }
+
     def _ensure_heights_capacity(self, n: int) -> None:
         """
         Garantisce che il VBO delle altezze possa contenere almeno n float.
@@ -673,6 +725,97 @@ class EqualizerOpenGLThread(threading.Thread):
         if self._band_order_symmetric:
             return arrange_symmetric(heights)
         return heights
+
+    def _ensure_bloom_fbos(self) -> bool:
+        """
+        Crea (lazy) i due FBO ping-pong half-res (GL_RGB16F) per il bloom.
+        Ritorna True se disponibili. Richiede dimensione framebuffer nota.
+        """
+        if self._bloom_size is not None:
+            return True
+        w = max(1, int(self._fb_width) // 2)
+        h = max(1, int(self._fb_height) // 2)
+        fbos, texs = [], []
+        for _ in range(2):
+            tex = glGenTextures(1)
+            glBindTexture(GL_TEXTURE_2D, tex)
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB16F, w, h, 0, GL_RGB, GL_FLOAT, None)
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR)
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR)
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE)
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE)
+            fbo = glGenFramebuffers(1)
+            glBindFramebuffer(GL_FRAMEBUFFER, fbo)
+            glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, tex, 0)
+            if glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE:
+                glBindFramebuffer(GL_FRAMEBUFFER, 0)
+                return False
+            fbos.append(fbo)
+            texs.append(tex)
+        glBindFramebuffer(GL_FRAMEBUFFER, 0)
+        self._bloom_fbos, self._bloom_texs, self._bloom_size = fbos, texs, (w, h)
+        return True
+
+    def _draw_bars_instanced(self, num_bars: int, viewport_px) -> None:
+        """Imposta le uniform delle barre e disegna la passata instanced (riuso)."""
+        glUseProgram(self._bars_program)
+        glUniform1f(self._bars_uniforms["uNumBars"], float(num_bars))
+        glUniform1f(self._bars_uniforms["uBarWidthFrac"], float(self._bar_width_frac))
+        glUniform1f(self._bars_uniforms["uGreenSplit"], self._green_split)
+        glUniform1f(self._bars_uniforms["uYellowSplit"], self._yellow_split)
+        glUniform1f(self._bars_uniforms["uBarsAlpha"], float(self._bars_alpha))
+        glUniform1i(self._bars_uniforms["uColorMode"], int(self._color_mode))
+        glUniform3f(self._bars_uniforms["uColorA"], *self._color_a)
+        glUniform3f(self._bars_uniforms["uColorB"], *self._color_b)
+        glUniform1f(self._bars_uniforms["uMirror"], 1.0 if self._mirror else 0.0)
+        glUniform1f(self._bars_uniforms["uRounded"], 1.0 if self._rounded else 0.0)
+        glUniform2f(self._bars_uniforms["uViewportPx"], float(viewport_px[0]), float(viewport_px[1]))
+        glBindVertexArray(self._bars_vao)
+        glDrawArraysInstanced(GL_TRIANGLES, 0, 6, num_bars)
+        glBindVertexArray(0)
+
+    def _render_bloom(self, num_bars: int) -> None:
+        """Renderizza le barre in un FBO half-res, le sfoca (H+V) e lascia il
+        risultato in _bloom_texs[0], pronto per il composito additivo."""
+        if not self._ensure_bloom_fbos():
+            return
+        w, h = self._bloom_size
+        # Pass A: barre nel FBO 0
+        glBindFramebuffer(GL_FRAMEBUFFER, self._bloom_fbos[0])
+        glViewport(0, 0, w, h)
+        glClear(GL_COLOR_BUFFER_BIT)
+        self._draw_bars_instanced(num_bars, (w, h))
+        # Pass B/C: blur ping-pong (orizzontale 0->1, verticale 1->0), N iterazioni
+        glDisable(GL_BLEND)
+        glUseProgram(self._blur_program)
+        glBindVertexArray(self._bg_vao)
+        for _ in range(BLOOM_BLUR_PASSES):
+            for dir_vec, src, dst in (((1.0 / w, 0.0), 0, 1), ((0.0, 1.0 / h), 1, 0)):
+                glBindFramebuffer(GL_FRAMEBUFFER, self._bloom_fbos[dst])
+                glClear(GL_COLOR_BUFFER_BIT)
+                glActiveTexture(GL_TEXTURE0)
+                glBindTexture(GL_TEXTURE_2D, self._bloom_texs[src])
+                glUniform1i(self._blur_uniforms["uTex"], 0)
+                glUniform2f(self._blur_uniforms["uDir"], dir_vec[0], dir_vec[1])
+                glDrawArrays(GL_TRIANGLES, 0, 6)
+        glBindVertexArray(0)
+        glEnable(GL_BLEND)
+        # Ripristina framebuffer e viewport reali
+        glBindFramebuffer(GL_FRAMEBUFFER, 0)
+        glViewport(0, 0, self._fb_width, self._fb_height)
+
+    def _composite_bloom(self) -> None:
+        """Disegna la texture sfocata in additivo sopra la scena."""
+        glUseProgram(self._bloom_composite_program)
+        glBlendFunc(GL_ONE, GL_ONE)
+        glActiveTexture(GL_TEXTURE0)
+        glBindTexture(GL_TEXTURE_2D, self._bloom_texs[0])
+        glUniform1i(self._bloom_uniforms["uTex"], 0)
+        glUniform1f(self._bloom_uniforms["uIntensity"], float(self._bloom_intensity))
+        glBindVertexArray(self._bg_vao)
+        glDrawArrays(GL_TRIANGLES, 0, 6)
+        glBindVertexArray(0)
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)   # ripristina blending standard
 
     def _render(self, heights: np.ndarray, dt: float) -> None:
         """
@@ -721,6 +864,10 @@ class EqualizerOpenGLThread(threading.Thread):
         glBindBuffer(GL_ARRAY_BUFFER, self._heights_vbo)
         glBufferSubData(GL_ARRAY_BUFFER, 0, heights.nbytes, heights)
 
+        # Bloom prepass (Blocco 2): barre nel FBO half-res, sfocate, pronte per il composito.
+        if self._bloom_enabled:
+            self._render_bloom(num_bars)
+
         glUseProgram(self._bars_program)
         glUniform1f(self._bars_uniforms["uNumBars"], float(num_bars))
         glUniform1f(self._bars_uniforms["uBarWidthFrac"], float(self._bar_width_frac))
@@ -754,6 +901,10 @@ class EqualizerOpenGLThread(threading.Thread):
             glBindVertexArray(self._caps_vao)
             glDrawArraysInstanced(GL_TRIANGLES, 0, 6, num_bars)
             glBindVertexArray(0)
+
+        # --- Composito bloom (Blocco 2): additivo sopra la scena ---
+        if self._bloom_enabled and self._bloom_size is not None:
+            self._composite_bloom()
         return
 
     def _cleanup_gl(self) -> None:
@@ -774,13 +925,21 @@ class EqualizerOpenGLThread(threading.Thread):
         if self._video_texture:
             _safe(lambda: glDeleteTextures(1, [self._video_texture]))
             self._video_texture = None
+        for tex in self._bloom_texs:
+            _safe(lambda t=tex: glDeleteTextures(1, [t]))
+        for fbo in self._bloom_fbos:
+            _safe(lambda f=fbo: glDeleteFramebuffers(1, [f]))
+        self._bloom_texs = []
+        self._bloom_fbos = []
+        self._bloom_size = None
         for vbo in (self._bars_quad_vbo, self._heights_vbo, self._bg_vbo, self._peaks_vbo):
             if vbo:
                 _safe(lambda v=vbo: glDeleteBuffers(1, [v]))
         for vao in (self._bars_vao, self._bg_vao, self._caps_vao):
             if vao:
                 _safe(lambda v=vao: glDeleteVertexArrays(1, [v]))
-        for prog in (self._bars_program, self._bg_program, self._caps_program):
+        for prog in (self._bars_program, self._bg_program, self._caps_program,
+                     self._blur_program, self._bloom_composite_program):
             if prog:
                 _safe(lambda p=prog: glDeleteProgram(p))
 
@@ -790,6 +949,7 @@ class EqualizerOpenGLThread(threading.Thread):
         self._heights_capacity = 0
         self._peaks_vbo = self._caps_vao = self._caps_program = None
         self._peaks_capacity = 0
+        self._blur_program = self._bloom_composite_program = None
 
     def process_control_message(self, message):
         """
