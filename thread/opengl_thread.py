@@ -38,6 +38,20 @@ TILT_DB_PER_OCT = 0.0
 DEFAULT_COLOR_A = (0.231, 0.420, 1.0)   # blu  (#3b6bff): tinta / base gradiente
 DEFAULT_COLOR_B = (1.0, 0.231, 0.816)   # magenta (#ff3bd0): cima gradiente
 
+# --- Effetti reattivi (Blocco 2). Default OFF: nessun cambiamento visivo. ---
+DEFAULT_PEAKCAP_COLOR = (1.0, 1.0, 1.0)   # bianco
+PEAKCAP_HOLD = 0.5        # s di hold prima della caduta
+PEAKCAP_FALL = 0.8        # frazione di altezza al secondo
+CAP_THICKNESS = 0.012     # spessore del trattino (frazione di altezza finestra)
+BEAT_INTENSITY = 0.08         # zoom massimo dello sfondo (8%)
+BEAT_SENSITIVITY = 1.5        # energia > 1.5x media -> beat
+BEAT_EMA_ALPHA = 0.08         # reattività della media mobile dell'energia
+BEAT_REFRACTORY = 0.15        # s minimi tra due beat
+BEAT_DECAY_TAU = 0.18         # s, decadimento dell'inviluppo di pulsazione
+BASS_CUTOFF_HZ = 150.0        # energia bassi: potenza FFT sotto questa frequenza
+BLOOM_INTENSITY = 1.0     # forza del composito additivo
+BLOOM_BLUR_PASSES = 1     # iterazioni di blur (H+V) per il bloom
+
 # --- Aspetto delle barre (ex magic number) ---
 BAR_WIDTH_FRAC = 0.8    # frazione dello slot occupata dalla barra (il resto è spazio)
 GREEN_SPLIT = 0.5       # sotto questa frazione d'altezza finestra → verde
@@ -160,6 +174,69 @@ void main() {
 }
 """
 
+# --- Shader peak-cap: trattino sottile instanced all'altezza del picco ---
+_CAPS_VERTEX_SRC = """
+#version 330 core
+layout(location = 0) in vec2 aUnitPos;   // quad unitario [0,1]^2 (condiviso con le barre)
+layout(location = 1) in float aPeak;     // picco normalizzato per-istanza [0,1]
+uniform float uNumBars;
+uniform float uBarWidthFrac;
+uniform float uMirror;
+uniform float uCapThickness;
+void main() {
+    float slot = 1.0 / uNumBars;
+    float xLeft = (float(gl_InstanceID) + 0.5 * (1.0 - uBarWidthFrac)) * slot;
+    float x = xLeft + aUnitPos.x * (slot * uBarWidthFrac);
+    float yTopBottom = aPeak;              // estremità superiore, ancoraggio dal basso
+    float yTopCenter = 0.5 + 0.5 * aPeak;  // estremità superiore, ancoraggio specchiato
+    float yc = mix(yTopBottom, yTopCenter, uMirror);
+    float y = yc + (aUnitPos.y - 0.5) * uCapThickness;  // trattino sottile attorno a yc
+    gl_Position = vec4(x * 2.0 - 1.0, y * 2.0 - 1.0, 0.0, 1.0);
+}
+"""
+
+_CAPS_FRAGMENT_SRC = """
+#version 330 core
+out vec4 FragColor;
+uniform vec3 uCapColor;
+void main() { FragColor = vec4(uCapColor, 1.0); }
+"""
+
+# --- Shader bloom: blur gaussiano separabile + composito additivo (quad fullscreen) ---
+_FULLSCREEN_VERTEX_SRC = """
+#version 330 core
+layout(location = 0) in vec2 aPos;
+layout(location = 1) in vec2 aTexCoord;
+out vec2 vUV;
+void main() { vUV = aTexCoord; gl_Position = vec4(aPos, 0.0, 1.0); }
+"""
+
+_BLUR_FRAGMENT_SRC = """
+#version 330 core
+in vec2 vUV;
+out vec4 FragColor;
+uniform sampler2D uTex;
+uniform vec2 uDir;   // (1/w, 0) orizzontale oppure (0, 1/h) verticale
+void main() {
+    float w[5] = float[](0.227027, 0.1945946, 0.1216216, 0.054054, 0.016216);
+    vec3 c = texture(uTex, vUV).rgb * w[0];
+    for (int i = 1; i < 5; i++) {
+        c += texture(uTex, vUV + uDir * float(i)).rgb * w[i];
+        c += texture(uTex, vUV - uDir * float(i)).rgb * w[i];
+    }
+    FragColor = vec4(c, 1.0);
+}
+"""
+
+_BLOOM_COMPOSITE_FRAGMENT_SRC = """
+#version 330 core
+in vec2 vUV;
+out vec4 FragColor;
+uniform sampler2D uTex;
+uniform float uIntensity;
+void main() { FragColor = vec4(texture(uTex, vUV).rgb * uIntensity, 1.0); }
+"""
+
 # Sfondo: quad fullscreen testurizzato. L'alpha è una uniform → nessuna ricreazione
 # della texture quando cambia (niente più re-upload né leak).
 # uFlipV capovolge la coordinata v a costo zero: le immagini sono già flippate in CPU
@@ -170,10 +247,11 @@ _BG_VERTEX_SRC = """
 layout(location = 0) in vec2 aPos;        // NDC [-1,1]
 layout(location = 1) in vec2 aTexCoord;
 uniform float uFlipV;                     // 0 = immagine (già flippata), 1 = frame video
+uniform float uBgZoom;                    // zoom additivo sul beat (0 = nessuno)
 out vec2 vTexCoord;
 void main() {
     vTexCoord = vec2(aTexCoord.x, mix(aTexCoord.y, 1.0 - aTexCoord.y, uFlipV));
-    gl_Position = vec4(aPos, 0.0, 1.0);
+    gl_Position = vec4(aPos * (1.0 + uBgZoom), 0.0, 1.0);
 }
 """
 
@@ -239,6 +317,15 @@ class EqualizerOpenGLThread(threading.Thread):
                  rounded: bool = False,
                  mirror: bool = False,
                  band_order_symmetric: bool = False,
+                 peakcap_enabled: bool = False,
+                 peakcap_color: tuple = DEFAULT_PEAKCAP_COLOR,
+                 peakcap_hold: float = PEAKCAP_HOLD,
+                 peakcap_fall: float = PEAKCAP_FALL,
+                 beat_enabled: bool = False,
+                 beat_intensity: float = BEAT_INTENSITY,
+                 beat_sensitivity: float = BEAT_SENSITIVITY,
+                 bloom_enabled: bool = False,
+                 bloom_intensity: float = BLOOM_INTENSITY,
                  window_close_callback: Callable = None):
         super().__init__()
         self._audio_queue = audio_queue
@@ -277,6 +364,33 @@ class EqualizerOpenGLThread(threading.Thread):
         self._fb_width = 1.0
         self._fb_height = 1.0
 
+        # --- Peak-cap (Blocco 2) ---
+        self._peakcap_enabled = bool(peakcap_enabled)
+        self._peakcap_color = tuple(peakcap_color)
+        self._peakcap_hold = float(peakcap_hold)
+        self._peakcap_fall = float(peakcap_fall)
+        # self._n_bands è già impostato; self.frequency_bands viene creato solo più
+        # tardi da _setup_bands. _update_peaks ridimensiona comunque se cambia il
+        # numero di barre visualizzate (es. ordine simmetrico).
+        self._peaks = np.zeros(self._n_bands, dtype=np.float32)
+        self._peak_age = np.zeros(self._n_bands, dtype=np.float32)
+
+        # --- Beat pulse (Blocco 2) ---
+        self._beat_enabled = bool(beat_enabled)
+        self._beat_intensity = float(beat_intensity)
+        self._beat_sensitivity = float(beat_sensitivity)
+        self._beat_ema = 0.0          # media mobile dell'energia bassi
+        self._beat_refractory = 0.0   # timer refrattario (s)
+        self._beat_pulse = 0.0        # inviluppo di pulsazione [0,1]
+        self._bass_energy = 0.0       # energia bassi dell'ultimo frame (da create_equalizer)
+        # Maschera dei bin FFT sotto il cutoff bassi (per l'energia beat)
+        _freqs = np.fft.rfftfreq(N_FFT, 1.0 / RATE)
+        self._bass_mask = _freqs < BASS_CUTOFF_HZ
+
+        # --- Bloom (Blocco 2) ---
+        self._bloom_enabled = bool(bloom_enabled)
+        self._bloom_intensity = float(bloom_intensity)
+
         # Oggetti OpenGL (creati in init_gl_objects una volta attivo il contesto)
         self._bars_program = None
         self._bg_program = None
@@ -288,6 +402,18 @@ class EqualizerOpenGLThread(threading.Thread):
         self._bg_vbo = None
         self._bars_uniforms = {}
         self._bg_uniforms = {}
+        self._caps_program = None
+        self._caps_vao = None
+        self._peaks_vbo = None
+        self._peaks_capacity = 0
+        self._caps_uniforms = {}
+        self._blur_program = None
+        self._bloom_composite_program = None
+        self._blur_uniforms = {}
+        self._bloom_uniforms = {}
+        self._bloom_fbos = []      # 2 FBO ping-pong
+        self._bloom_texs = []      # 2 texture half-res (GL_RGB16F)
+        self._bloom_size = None    # (w, h) half-res; None = non ancora creati
 
         self.stop_event = threading.Event()
         self._background_texture = None
@@ -426,6 +552,9 @@ class EqualizerOpenGLThread(threading.Thread):
         # Media della potenza tra i canali
         power = power.mean(axis=0)                              # (N_FFT//2 + 1,)
 
+        # Energia bassi (per la beat detection): somma potenza sotto il cutoff.
+        self._bass_energy = float(np.sum(power[self._bass_mask]))
+
         # Somma dell'energia per banda in O(bin) (niente loop di maschere)
         band_power = np.bincount(
             self._bin_band[self._valid_bins],
@@ -477,7 +606,7 @@ class EqualizerOpenGLThread(threading.Thread):
         }
         self._bg_uniforms = {
             name: glGetUniformLocation(self._bg_program, name)
-            for name in ("uTexture", "uAlpha", "uFlipV")
+            for name in ("uTexture", "uAlpha", "uFlipV", "uBgZoom")
         }
 
         # --- VAO/VBO barre ---
@@ -530,6 +659,45 @@ class EqualizerOpenGLThread(threading.Thread):
         glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, stride, ctypes.c_void_p(2 * 4))
         glBindVertexArray(0)
 
+        # --- Programma + VAO/VBO peak-cap (riusa il quad unitario delle barre) ---
+        self._caps_program = compileProgram(
+            compileShader(_CAPS_VERTEX_SRC, GL_VERTEX_SHADER),
+            compileShader(_CAPS_FRAGMENT_SRC, GL_FRAGMENT_SHADER),
+        )
+        self._caps_uniforms = {
+            name: glGetUniformLocation(self._caps_program, name)
+            for name in ("uNumBars", "uBarWidthFrac", "uMirror", "uCapThickness", "uCapColor")
+        }
+        self._caps_vao = glGenVertexArrays(1)
+        glBindVertexArray(self._caps_vao)
+        glBindBuffer(GL_ARRAY_BUFFER, self._bars_quad_vbo)   # quad unitario condiviso
+        glEnableVertexAttribArray(0)
+        glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, ctypes.c_void_p(0))
+        self._peaks_vbo = glGenBuffers(1)
+        glBindBuffer(GL_ARRAY_BUFFER, self._peaks_vbo)
+        glEnableVertexAttribArray(1)
+        glVertexAttribPointer(1, 1, GL_FLOAT, GL_FALSE, 0, ctypes.c_void_p(0))
+        glVertexAttribDivisor(1, 1)
+        self._peaks_capacity = 0
+        glBindVertexArray(0)
+
+        # --- Programmi bloom (riusano il VAO dello sfondo come quad fullscreen) ---
+        self._blur_program = compileProgram(
+            compileShader(_FULLSCREEN_VERTEX_SRC, GL_VERTEX_SHADER),
+            compileShader(_BLUR_FRAGMENT_SRC, GL_FRAGMENT_SHADER),
+        )
+        self._bloom_composite_program = compileProgram(
+            compileShader(_FULLSCREEN_VERTEX_SRC, GL_VERTEX_SHADER),
+            compileShader(_BLOOM_COMPOSITE_FRAGMENT_SRC, GL_FRAGMENT_SHADER),
+        )
+        self._blur_uniforms = {
+            name: glGetUniformLocation(self._blur_program, name) for name in ("uTex", "uDir")
+        }
+        self._bloom_uniforms = {
+            name: glGetUniformLocation(self._bloom_composite_program, name)
+            for name in ("uTex", "uIntensity")
+        }
+
     def _ensure_heights_capacity(self, n: int) -> None:
         """
         Garantisce che il VBO delle altezze possa contenere almeno n float.
@@ -541,6 +709,14 @@ class EqualizerOpenGLThread(threading.Thread):
         glBufferData(GL_ARRAY_BUFFER, n * 4, None, GL_STREAM_DRAW)
         self._heights_capacity = n
 
+    def _ensure_peaks_capacity(self, n: int) -> None:
+        """Garantisce che il VBO dei picchi contenga almeno n float."""
+        if n <= self._peaks_capacity:
+            return
+        glBindBuffer(GL_ARRAY_BUFFER, self._peaks_vbo)
+        glBufferData(GL_ARRAY_BUFFER, n * 4, None, GL_STREAM_DRAW)
+        self._peaks_capacity = n
+
     def _display_heights(self, heights: np.ndarray) -> np.ndarray:
         """
         Applica la disposizione delle barre prima dell'upload: identità in ordine
@@ -550,7 +726,98 @@ class EqualizerOpenGLThread(threading.Thread):
             return arrange_symmetric(heights)
         return heights
 
-    def _render(self, heights: np.ndarray) -> None:
+    def _ensure_bloom_fbos(self) -> bool:
+        """
+        Crea (lazy) i due FBO ping-pong half-res (GL_RGB16F) per il bloom.
+        Ritorna True se disponibili. Richiede dimensione framebuffer nota.
+        """
+        if self._bloom_size is not None:
+            return True
+        w = max(1, int(self._fb_width) // 2)
+        h = max(1, int(self._fb_height) // 2)
+        fbos, texs = [], []
+        for _ in range(2):
+            tex = glGenTextures(1)
+            glBindTexture(GL_TEXTURE_2D, tex)
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB16F, w, h, 0, GL_RGB, GL_FLOAT, None)
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR)
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR)
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE)
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE)
+            fbo = glGenFramebuffers(1)
+            glBindFramebuffer(GL_FRAMEBUFFER, fbo)
+            glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, tex, 0)
+            if glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE:
+                glBindFramebuffer(GL_FRAMEBUFFER, 0)
+                return False
+            fbos.append(fbo)
+            texs.append(tex)
+        glBindFramebuffer(GL_FRAMEBUFFER, 0)
+        self._bloom_fbos, self._bloom_texs, self._bloom_size = fbos, texs, (w, h)
+        return True
+
+    def _draw_bars_instanced(self, num_bars: int, viewport_px) -> None:
+        """Imposta le uniform delle barre e disegna la passata instanced (riuso)."""
+        glUseProgram(self._bars_program)
+        glUniform1f(self._bars_uniforms["uNumBars"], float(num_bars))
+        glUniform1f(self._bars_uniforms["uBarWidthFrac"], float(self._bar_width_frac))
+        glUniform1f(self._bars_uniforms["uGreenSplit"], self._green_split)
+        glUniform1f(self._bars_uniforms["uYellowSplit"], self._yellow_split)
+        glUniform1f(self._bars_uniforms["uBarsAlpha"], float(self._bars_alpha))
+        glUniform1i(self._bars_uniforms["uColorMode"], int(self._color_mode))
+        glUniform3f(self._bars_uniforms["uColorA"], *self._color_a)
+        glUniform3f(self._bars_uniforms["uColorB"], *self._color_b)
+        glUniform1f(self._bars_uniforms["uMirror"], 1.0 if self._mirror else 0.0)
+        glUniform1f(self._bars_uniforms["uRounded"], 1.0 if self._rounded else 0.0)
+        glUniform2f(self._bars_uniforms["uViewportPx"], float(viewport_px[0]), float(viewport_px[1]))
+        glBindVertexArray(self._bars_vao)
+        glDrawArraysInstanced(GL_TRIANGLES, 0, 6, num_bars)
+        glBindVertexArray(0)
+
+    def _render_bloom(self, num_bars: int) -> None:
+        """Renderizza le barre in un FBO half-res, le sfoca (H+V) e lascia il
+        risultato in _bloom_texs[0], pronto per il composito additivo."""
+        if not self._ensure_bloom_fbos():
+            return
+        w, h = self._bloom_size
+        # Pass A: barre nel FBO 0
+        glBindFramebuffer(GL_FRAMEBUFFER, self._bloom_fbos[0])
+        glViewport(0, 0, w, h)
+        glClear(GL_COLOR_BUFFER_BIT)
+        self._draw_bars_instanced(num_bars, (w, h))
+        # Pass B/C: blur ping-pong (orizzontale 0->1, verticale 1->0), N iterazioni
+        glDisable(GL_BLEND)
+        glUseProgram(self._blur_program)
+        glBindVertexArray(self._bg_vao)
+        for _ in range(BLOOM_BLUR_PASSES):
+            for dir_vec, src, dst in (((1.0 / w, 0.0), 0, 1), ((0.0, 1.0 / h), 1, 0)):
+                glBindFramebuffer(GL_FRAMEBUFFER, self._bloom_fbos[dst])
+                glClear(GL_COLOR_BUFFER_BIT)
+                glActiveTexture(GL_TEXTURE0)
+                glBindTexture(GL_TEXTURE_2D, self._bloom_texs[src])
+                glUniform1i(self._blur_uniforms["uTex"], 0)
+                glUniform2f(self._blur_uniforms["uDir"], dir_vec[0], dir_vec[1])
+                glDrawArrays(GL_TRIANGLES, 0, 6)
+        glBindVertexArray(0)
+        glEnable(GL_BLEND)
+        # Ripristina framebuffer e viewport reali
+        glBindFramebuffer(GL_FRAMEBUFFER, 0)
+        glViewport(0, 0, self._fb_width, self._fb_height)
+
+    def _composite_bloom(self) -> None:
+        """Disegna la texture sfocata in additivo sopra la scena."""
+        glUseProgram(self._bloom_composite_program)
+        glBlendFunc(GL_ONE, GL_ONE)
+        glActiveTexture(GL_TEXTURE0)
+        glBindTexture(GL_TEXTURE_2D, self._bloom_texs[0])
+        glUniform1i(self._bloom_uniforms["uTex"], 0)
+        glUniform1f(self._bloom_uniforms["uIntensity"], float(self._bloom_intensity))
+        glBindVertexArray(self._bg_vao)
+        glDrawArrays(GL_TRIANGLES, 0, 6)
+        glBindVertexArray(0)
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)   # ripristina blending standard
+
+    def _render(self, heights: np.ndarray, dt: float) -> None:
         """
         Disegna un frame: pulisce, disegna lo sfondo (se presente) e poi le barre
         con una sola draw call instanced.
@@ -586,6 +853,7 @@ class EqualizerOpenGLThread(threading.Thread):
             glUniform1i(self._bg_uniforms["uTexture"], 0)
             glUniform1f(self._bg_uniforms["uAlpha"], alpha)
             glUniform1f(self._bg_uniforms["uFlipV"], flip)
+            glUniform1f(self._bg_uniforms["uBgZoom"], float(self._beat_pulse * self._beat_intensity))
             glBindVertexArray(self._bg_vao)
             glDrawArrays(GL_TRIANGLES, 0, 6)
 
@@ -595,6 +863,10 @@ class EqualizerOpenGLThread(threading.Thread):
         self._ensure_heights_capacity(num_bars)
         glBindBuffer(GL_ARRAY_BUFFER, self._heights_vbo)
         glBufferSubData(GL_ARRAY_BUFFER, 0, heights.nbytes, heights)
+
+        # Bloom prepass (Blocco 2): barre nel FBO half-res, sfocate, pronte per il composito.
+        if self._bloom_enabled:
+            self._render_bloom(num_bars)
 
         glUseProgram(self._bars_program)
         glUniform1f(self._bars_uniforms["uNumBars"], float(num_bars))
@@ -611,6 +883,29 @@ class EqualizerOpenGLThread(threading.Thread):
         glBindVertexArray(self._bars_vao)
         glDrawArraysInstanced(GL_TRIANGLES, 0, 6, num_bars)
         glBindVertexArray(0)
+
+        # --- Peak-cap (Blocco 2): aggiorna i picchi e disegna i trattini ---
+        if self._peakcap_enabled:
+            peaks = self._update_peaks(heights, dt)
+            if peaks.dtype != np.float32 or not peaks.flags["C_CONTIGUOUS"]:
+                peaks = np.ascontiguousarray(peaks, dtype=np.float32)
+            self._ensure_peaks_capacity(num_bars)
+            glBindBuffer(GL_ARRAY_BUFFER, self._peaks_vbo)
+            glBufferSubData(GL_ARRAY_BUFFER, 0, peaks.nbytes, peaks)
+            glUseProgram(self._caps_program)
+            glUniform1f(self._caps_uniforms["uNumBars"], float(num_bars))
+            glUniform1f(self._caps_uniforms["uBarWidthFrac"], float(self._bar_width_frac))
+            glUniform1f(self._caps_uniforms["uMirror"], 1.0 if self._mirror else 0.0)
+            glUniform1f(self._caps_uniforms["uCapThickness"], CAP_THICKNESS)
+            glUniform3f(self._caps_uniforms["uCapColor"], *self._peakcap_color)
+            glBindVertexArray(self._caps_vao)
+            glDrawArraysInstanced(GL_TRIANGLES, 0, 6, num_bars)
+            glBindVertexArray(0)
+
+        # --- Composito bloom (Blocco 2): additivo sopra la scena ---
+        if self._bloom_enabled and self._bloom_size is not None:
+            self._composite_bloom()
+        return
 
     def _cleanup_gl(self) -> None:
         """
@@ -630,13 +925,21 @@ class EqualizerOpenGLThread(threading.Thread):
         if self._video_texture:
             _safe(lambda: glDeleteTextures(1, [self._video_texture]))
             self._video_texture = None
-        for vbo in (self._bars_quad_vbo, self._heights_vbo, self._bg_vbo):
+        for tex in self._bloom_texs:
+            _safe(lambda t=tex: glDeleteTextures(1, [t]))
+        for fbo in self._bloom_fbos:
+            _safe(lambda f=fbo: glDeleteFramebuffers(1, [f]))
+        self._bloom_texs = []
+        self._bloom_fbos = []
+        self._bloom_size = None
+        for vbo in (self._bars_quad_vbo, self._heights_vbo, self._bg_vbo, self._peaks_vbo):
             if vbo:
                 _safe(lambda v=vbo: glDeleteBuffers(1, [v]))
-        for vao in (self._bars_vao, self._bg_vao):
+        for vao in (self._bars_vao, self._bg_vao, self._caps_vao):
             if vao:
                 _safe(lambda v=vao: glDeleteVertexArrays(1, [v]))
-        for prog in (self._bars_program, self._bg_program):
+        for prog in (self._bars_program, self._bg_program, self._caps_program,
+                     self._blur_program, self._bloom_composite_program):
             if prog:
                 _safe(lambda p=prog: glDeleteProgram(p))
 
@@ -644,6 +947,9 @@ class EqualizerOpenGLThread(threading.Thread):
         self._bars_vao = self._bg_vao = None
         self._bars_program = self._bg_program = None
         self._heights_capacity = 0
+        self._peaks_vbo = self._caps_vao = self._caps_program = None
+        self._peaks_capacity = 0
+        self._blur_program = self._bloom_composite_program = None
 
     def process_control_message(self, message):
         """
@@ -728,6 +1034,33 @@ class EqualizerOpenGLThread(threading.Thread):
             # True = simmetrico (bassi al centro), False = standard.
             self._band_order_symmetric = bool(message['value'])
 
+        elif message_type == 'set_peakcap_enabled':
+            self._peakcap_enabled = bool(message['value'])
+
+        elif message_type == 'set_peakcap_color':
+            self._peakcap_color = tuple(message['value'])
+
+        elif message_type == 'set_peakcap_hold':
+            self._peakcap_hold = float(message['value'])
+
+        elif message_type == 'set_peakcap_fall':
+            self._peakcap_fall = float(message['value'])
+
+        elif message_type == 'set_beat_enabled':
+            self._beat_enabled = bool(message['value'])
+
+        elif message_type == 'set_beat_intensity':
+            self._beat_intensity = float(message['value'])
+
+        elif message_type == 'set_beat_sensitivity':
+            self._beat_sensitivity = float(message['value'])
+
+        elif message_type == 'set_bloom_enabled':
+            self._bloom_enabled = bool(message['value'])
+
+        elif message_type == 'set_bloom_intensity':
+            self._bloom_intensity = float(message['value'])
+
         elif message_type == 'set_image':
             # L'immagine sostituisce il video: ferma l'eventuale riproduzione.
             self._stop_video()
@@ -742,6 +1075,40 @@ class EqualizerOpenGLThread(threading.Thread):
             # Torna all'immagine di sfondo (se presente).
             self._stop_video()
             self._background_texture = self.load_texture()
+
+    def _update_peaks(self, heights: np.ndarray, dt: float) -> np.ndarray:
+        """
+        Aggiorna i picchi per-barra (peak-cap): scatto al nuovo massimo, hold, poi
+        caduta frame-rate-independent. Lavora sulle altezze già disposte.
+        """
+        n = heights.shape[0]
+        if self._peaks.shape[0] != n:
+            self._peaks = np.zeros(n, dtype=np.float32)
+            self._peak_age = np.zeros(n, dtype=np.float32)
+        rising = heights >= self._peaks
+        self._peaks[rising] = heights[rising]
+        self._peak_age[rising] = 0.0
+        held = ~rising
+        self._peak_age[held] += dt
+        falling = held & (self._peak_age > self._peakcap_hold)
+        self._peaks[falling] -= self._peakcap_fall * dt
+        np.clip(self._peaks, 0.0, 1.0, out=self._peaks)
+        return self._peaks
+
+    def _detect_beat(self, energy: float, dt: float) -> bool:
+        """
+        Onset detection sull'energia dei bassi: beat quando l'energia supera
+        media_mobile * sensibilità, fuori dal periodo refrattario. Aggiorna la
+        media mobile (EMA) e il timer refrattario. Puro/testabile.
+        """
+        self._beat_refractory = max(0.0, self._beat_refractory - dt)
+        if self._beat_ema <= 1e-12:
+            self._beat_ema = energy
+        is_beat = (energy > self._beat_ema * self._beat_sensitivity) and (self._beat_refractory <= 0.0)
+        self._beat_ema += (energy - self._beat_ema) * BEAT_EMA_ALPHA
+        if is_beat:
+            self._beat_refractory = BEAT_REFRACTORY
+        return is_beat
 
     def smooth_amplitudes(self, targets, delta_time: float) -> np.ndarray:
         """
@@ -890,6 +1257,15 @@ class EqualizerOpenGLThread(threading.Thread):
                     if PERF_LOGS:
                         print(f"PERF LOG: FFT took {(time.perf_counter() - t0) * 1000:.3f} ms")
 
+                # Beat detection + inviluppo di pulsazione (Blocco 2)
+                if self._beat_enabled:
+                    if self._detect_beat(self._bass_energy, frame_delta):
+                        self._beat_pulse = 1.0
+                    # decadimento esponenziale frame-rate-independent
+                    self._beat_pulse *= math.exp(-frame_delta / BEAT_DECAY_TAU)
+                else:
+                    self._beat_pulse = 0.0
+
                 # 3) Ballistica attacco/rilascio
                 smoothed_amplitudes = self.smooth_amplitudes(self.target_amplitudes, frame_delta)
 
@@ -899,7 +1275,7 @@ class EqualizerOpenGLThread(threading.Thread):
                     self._advance_video(frame_delta)
 
                 # 4) Disegna il frame (sfondo + barre instanced) con i valori smoothed
-                self._render(smoothed_amplitudes)
+                self._render(smoothed_amplitudes, frame_delta)
 
                 glfw.swap_buffers(window)
                 glfw.poll_events()
