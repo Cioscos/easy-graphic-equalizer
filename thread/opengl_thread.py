@@ -1004,17 +1004,17 @@ class EqualizerOpenGLThread(threading.Thread):
         glDrawArraysInstanced(GL_TRIANGLES, 0, 6, num_bars)
         glBindVertexArray(0)
 
-    def _render_bloom(self, num_bars: int) -> None:
-        """Renderizza le barre in un FBO half-res, le sfoca (H+V) e lascia il
+    def _render_bloom(self) -> None:
+        """Renderizza la modalità corrente in un FBO half-res, la sfoca (H+V) e lascia il
         risultato in _bloom_texs[0], pronto per il composito additivo."""
         if not self._ensure_bloom_fbos():
             return
         w, h = self._bloom_size
-        # Pass A: barre nel FBO 0
+        # Pass A: modalità corrente nel FBO 0
         glBindFramebuffer(GL_FRAMEBUFFER, self._bloom_fbos[0])
         glViewport(0, 0, w, h)
         glClear(GL_COLOR_BUFFER_BIT)
-        self._draw_bars_instanced(num_bars, (w, h))
+        self._draw_current_mode((w, h))
         # Pass B/C: blur ping-pong (orizzontale 0->1, verticale 1->0), N iterazioni
         glDisable(GL_BLEND)
         glUseProgram(self._blur_program)
@@ -1047,78 +1047,107 @@ class EqualizerOpenGLThread(threading.Thread):
         glBindVertexArray(0)
         glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)   # ripristina blending standard
 
-    def _render(self, heights: np.ndarray, dt: float) -> None:
-        """
-        Disegna un frame: pulisce, disegna lo sfondo (se presente) e poi le barre
-        con una sola draw call instanced.
-
-        Args:
-            heights (np.ndarray): altezze normalizzate [0,1], una per barra (float32).
-        """
-        glClear(GL_COLOR_BUFFER_BIT)
-
-        # Disposizione barre (es. simmetrica) prima di calcolare il conteggio.
-        heights = self._display_heights(heights)
-
-        num_bars = int(heights.shape[0])
-        if num_bars < 1:
-            return
-
-        # --- Sfondo: video se attivo e pronto, altrimenti immagine. Stesso shader.
-        #     uFlipV=1 per il video (riga 0 in alto), 0 per l'immagine (già flippata).
-        #     Finché il primo frame video non è pronto si mostra l'ultima immagine
-        #     (transizione morbida, niente flash nero).
+    def _draw_background(self) -> None:
+        """Disegna lo sfondo (video se attivo, altrimenti immagine) con lo zoom del beat."""
         if self._video_active and self._video_texture:
             bg_tex, flip = self._video_texture, 1.0
         elif self._background_texture:
             bg_tex, flip = self._background_texture, 0.0
         else:
-            bg_tex, flip = None, 0.0
+            return
+        glUseProgram(self._bg_program)
+        alpha = 1.0 if self._bg_alpha is None else float(self._bg_alpha)
+        glActiveTexture(GL_TEXTURE0)
+        glBindTexture(GL_TEXTURE_2D, bg_tex)
+        glUniform1i(self._bg_uniforms["uTexture"], 0)
+        glUniform1f(self._bg_uniforms["uAlpha"], alpha)
+        glUniform1f(self._bg_uniforms["uFlipV"], flip)
+        glUniform1f(self._bg_uniforms["uBgZoom"], float(self._beat_pulse * self._beat_intensity))
+        glBindVertexArray(self._bg_vao)
+        glDrawArrays(GL_TRIANGLES, 0, 6)
+        glBindVertexArray(0)
 
-        if bg_tex:
-            glUseProgram(self._bg_program)
-            alpha = 1.0 if self._bg_alpha is None else float(self._bg_alpha)
-            glActiveTexture(GL_TEXTURE0)
-            glBindTexture(GL_TEXTURE_2D, bg_tex)
-            glUniform1i(self._bg_uniforms["uTexture"], 0)
-            glUniform1f(self._bg_uniforms["uAlpha"], alpha)
-            glUniform1f(self._bg_uniforms["uFlipV"], flip)
-            glUniform1f(self._bg_uniforms["uBgZoom"], float(self._beat_pulse * self._beat_intensity))
-            glBindVertexArray(self._bg_vao)
-            glDrawArrays(GL_TRIANGLES, 0, 6)
-
-        # --- Barre ---
+    def _upload_heights(self, heights: np.ndarray) -> None:
+        """Carica le altezze per-istanza nel VBO barre e imposta self._draw_count."""
         if heights.dtype != np.float32 or not heights.flags["C_CONTIGUOUS"]:
             heights = np.ascontiguousarray(heights, dtype=np.float32)
-        self._ensure_heights_capacity(num_bars)
+        n = int(heights.shape[0])
+        self._draw_count = n
+        self._ensure_heights_capacity(n)
         glBindBuffer(GL_ARRAY_BUFFER, self._heights_vbo)
         glBufferSubData(GL_ARRAY_BUFFER, 0, heights.nbytes, heights)
 
-        # Bloom prepass (Blocco 2): barre nel FBO half-res, sfocate, pronte per il composito.
+    def _prepare_mode_geometry(self, heights: np.ndarray, waveform) -> bool:
+        """
+        Costruisce e carica la geometria della modalità corrente; imposta self._draw_count
+        e (per le modalità a banda) self._bar_heights. Ritorna False se non c'è nulla da
+        disegnare (audio/bande vuoti).
+        """
+        if self._mode == MODE_OSCILLOSCOPE:
+            if waveform is None or waveform.size == 0:
+                self._draw_count = 0
+                return False
+            wf = trigger_align(np.ascontiguousarray(waveform, dtype=np.float32))
+            verts = build_waveform_strip(wf, self._osc_mirror, self._line_thickness, OSC_GAIN)
+            self._upload_strip(verts)
+            return self._draw_count > 0
+
+        # Modalità basate sulle bande: applica la disposizione (es. simmetrica).
+        heights = self._display_heights(heights)
+        if int(heights.shape[0]) < 1:
+            self._draw_count = 0
+            return False
+        self._bar_heights = heights  # per il peak-cap (solo Barre)
+        if self._mode == MODE_LINE:
+            verts = build_spectrum_strip(np.ascontiguousarray(heights, dtype=np.float32),
+                                         self._fill, self._line_thickness)
+            self._upload_strip(verts)
+        else:  # MODE_BARS o MODE_RADIAL: VBO altezze per-istanza
+            self._upload_heights(heights)
+        return self._draw_count > 0
+
+    def _draw_current_mode(self, viewport_px) -> None:
+        """Disegna la visualizzazione della modalità corrente (riusato da schermo e bloom)."""
+        if self._mode == MODE_RADIAL:
+            self._draw_bars_instanced(int(self._draw_count), viewport_px, radial=True)
+        elif self._mode in (MODE_OSCILLOSCOPE, MODE_LINE):
+            self._draw_strip()
+        else:  # MODE_BARS
+            self._draw_bars_instanced(int(self._draw_count), viewport_px, radial=False)
+
+    def _render(self, heights: np.ndarray, waveform, dt: float) -> None:
+        """
+        Disegna un frame: pulisce, prepara la geometria della modalità corrente, disegna
+        lo sfondo, poi la visualizzazione (dispatch per modalità), il peak-cap (solo Barre)
+        e il composito bloom.
+
+        Args:
+            heights: ampiezze per banda [0,1] (float32).
+            waveform: campioni mono [-1,1] per l'oscilloscopio (None nelle altre modalità).
+            dt: tempo trascorso dall'ultimo frame (s).
+        """
+        glClear(GL_COLOR_BUFFER_BIT)
+
+        # Geometria della modalità corrente (upload VBO + self._draw_count).
+        if not self._prepare_mode_geometry(heights, waveform):
+            self._draw_background()
+            return
+
+        self._draw_background()
+
+        # Bloom prepass (mode-aware): la modalità corrente nell'FBO half-res.
         if self._bloom_enabled:
-            self._render_bloom(num_bars)
+            self._render_bloom()
 
-        glUseProgram(self._bars_program)
-        glUniform1f(self._bars_uniforms["uNumBars"], float(num_bars))
-        glUniform1f(self._bars_uniforms["uBarWidthFrac"], float(self._bar_width_frac))
-        glUniform1f(self._bars_uniforms["uGreenSplit"], self._green_split)
-        glUniform1f(self._bars_uniforms["uYellowSplit"], self._yellow_split)
-        glUniform1f(self._bars_uniforms["uBarsAlpha"], float(self._bars_alpha))
-        glUniform1i(self._bars_uniforms["uColorMode"], int(self._color_mode))
-        glUniform3f(self._bars_uniforms["uColorA"], *self._color_a)
-        glUniform3f(self._bars_uniforms["uColorB"], *self._color_b)
-        glUniform1f(self._bars_uniforms["uMirror"], 1.0 if self._mirror else 0.0)
-        glUniform1f(self._bars_uniforms["uRounded"], 1.0 if self._rounded else 0.0)
-        glUniform2f(self._bars_uniforms["uViewportPx"], float(self._fb_width), float(self._fb_height))
-        glBindVertexArray(self._bars_vao)
-        glDrawArraysInstanced(GL_TRIANGLES, 0, 6, num_bars)
-        glBindVertexArray(0)
+        # Visualizzazione corrente.
+        self._draw_current_mode((self._fb_width, self._fb_height))
 
-        # --- Peak-cap (Blocco 2): aggiorna i picchi e disegna i trattini ---
-        if self._peakcap_enabled:
-            peaks = self._update_peaks(heights, dt)
+        # Peak-cap: solo in modalità Barre.
+        if self._peakcap_enabled and self._mode == MODE_BARS:
+            peaks = self._update_peaks(self._bar_heights, dt)
             if peaks.dtype != np.float32 or not peaks.flags["C_CONTIGUOUS"]:
                 peaks = np.ascontiguousarray(peaks, dtype=np.float32)
+            num_bars = int(self._draw_count)
             self._ensure_peaks_capacity(num_bars)
             glBindBuffer(GL_ARRAY_BUFFER, self._peaks_vbo)
             glBufferSubData(GL_ARRAY_BUFFER, 0, peaks.nbytes, peaks)
@@ -1132,7 +1161,7 @@ class EqualizerOpenGLThread(threading.Thread):
             glDrawArraysInstanced(GL_TRIANGLES, 0, 6, num_bars)
             glBindVertexArray(0)
 
-        # --- Composito bloom (Blocco 2): additivo sopra la scena ---
+        # Composito bloom additivo sopra la scena.
         if self._bloom_enabled and self._bloom_size is not None:
             self._composite_bloom()
         return
@@ -1504,6 +1533,11 @@ class EqualizerOpenGLThread(threading.Thread):
                     if PERF_LOGS:
                         print(f"PERF LOG: FFT took {(time.perf_counter() - t0) * 1000:.3f} ms")
 
+                # Waveform mono per l'oscilloscopio (solo se serve): media dei canali.
+                waveform = None
+                if self._mode == MODE_OSCILLOSCOPE and fft_window.size > 0:
+                    waveform = fft_window.mean(axis=1).astype(np.float32)
+
                 # Beat detection + inviluppo di pulsazione (Blocco 2)
                 if self._beat_enabled:
                     if self._detect_beat(self._bass_energy, frame_delta):
@@ -1521,8 +1555,8 @@ class EqualizerOpenGLThread(threading.Thread):
                 if self._video_active:
                     self._advance_video(frame_delta)
 
-                # 4) Disegna il frame (sfondo + barre instanced) con i valori smoothed
-                self._render(smoothed_amplitudes, frame_delta)
+                # 4) Disegna il frame (modalità corrente) con i valori smoothed
+                self._render(smoothed_amplitudes, waveform, frame_delta)
 
                 glfw.swap_buffers(window)
                 glfw.poll_events()
