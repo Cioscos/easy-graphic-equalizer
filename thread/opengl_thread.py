@@ -115,6 +115,7 @@ uniform float uRounded;       // 0/1: cima arrotondata
 uniform float uNumBars;
 uniform float uBarWidthFrac;
 uniform vec2 uViewportPx;     // dimensione framebuffer in pixel
+uniform float uMirror;        // 0 = dal basso (arrotonda solo la cima), 1 = specchiato (entrambe)
 
 vec3 hsv2rgb(vec3 c) {
     vec4 K = vec4(1.0, 2.0 / 3.0, 1.0 / 3.0, 3.0);
@@ -138,14 +139,18 @@ void main() {
 
     float a = uBarsAlpha;
     if (uRounded > 0.5) {
-        // Cappuccio semicircolare alla cima, corretto per aspect ratio.
+        // Cappuccio semicircolare, corretto per aspect ratio. Dal basso si arrotonda
+        // solo la cima (la base poggia sul bordo schermo); specchiato si arrotondano
+        // entrambe le estremità (effetto capsula), prendendo la più vicina.
         float wpx = (1.0 / uNumBars) * uBarWidthFrac * uViewportPx.x;  // larghezza barra (px)
         float hpx = max(vBarH * uViewportPx.y, 1.0);                   // altezza barra (px)
         float r = 0.5 * wpx;
         float dyTop = (1.0 - vBarY) * hpx;        // px sotto la cima (0 = cima)
-        if (dyTop < r) {
+        float dyBot = vBarY * hpx;                // px sopra la base (0 = base)
+        float d = (uMirror > 0.5) ? min(dyTop, dyBot) : dyTop;  // estremità arrotondata più vicina
+        if (d < r) {
             float dx = (vBarX - 0.5) * wpx;       // offset orizzontale dal centro (px)
-            float dyc = r - dyTop;                // offset verticale dal centro del cappuccio
+            float dyc = r - d;                    // offset verticale dal centro del cappuccio
             float dist = sqrt(dx * dx + dyc * dyc);
             float aa = max(fwidth(dist), 1e-3);
             a *= 1.0 - smoothstep(r - aa, r + aa, dist);
