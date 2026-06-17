@@ -169,6 +169,9 @@ layout(location = 1) in float aHeight;   // altezza normalizzata per-istanza [0,
 uniform float uNumBars;
 uniform float uBarWidthFrac;
 uniform float uMirror;       // 0 = dal basso, 1 = specchiato dal centro
+uniform float uRadial;       // 0 = cartesiano (barre), 1 = polare (radiale)
+uniform float uInnerRadius;  // raggio del foro centrale [0,1] (radiale)
+uniform float uAspect;       // fbW/fbH: corregge la x per cerchi tondi
 out float vAmp;     // frazione altezza-finestra dal basso (Classico)
 out float vBarY;    // frazione lungo la barra [0,1] (Gradiente / cap)
 out float vBarX;    // frazione sulla larghezza [0,1] (cap arrotondato)
@@ -186,7 +189,17 @@ void main() {
     vBarX = aUnitPos.x;
     vBarT = (uNumBars > 1.0) ? float(gl_InstanceID) / (uNumBars - 1.0) : 0.0;
     vBarH = aHeight;
-    gl_Position = vec4(x * 2.0 - 1.0, y * 2.0 - 1.0, 0.0, 1.0);
+    if (uRadial > 0.5) {
+        // angolo centrale del raggio (parte dall'alto, senso orario) + larghezza angolare
+        float ang = (float(gl_InstanceID) + 0.5) * slot * 6.28318530718;
+        ang += (aUnitPos.x - 0.5) * slot * uBarWidthFrac * 6.28318530718;
+        float r = uInnerRadius + aUnitPos.y * aHeight * (1.0 - uInnerRadius);
+        float px = (r * sin(ang)) / uAspect;   // correzione aspect: cerchio tondo
+        float py = r * cos(ang);
+        gl_Position = vec4(px, py, 0.0, 1.0);
+    } else {
+        gl_Position = vec4(x * 2.0 - 1.0, y * 2.0 - 1.0, 0.0, 1.0);
+    }
 }
 """
 
@@ -702,7 +715,7 @@ class EqualizerOpenGLThread(threading.Thread):
             name: glGetUniformLocation(self._bars_program, name)
             for name in ("uNumBars", "uBarWidthFrac", "uGreenSplit", "uYellowSplit",
                          "uBarsAlpha", "uMirror", "uColorMode", "uColorA", "uColorB",
-                         "uRounded", "uViewportPx")
+                         "uRounded", "uViewportPx", "uRadial", "uInnerRadius", "uAspect")
         }
         self._bg_uniforms = {
             name: glGetUniformLocation(self._bg_program, name)
@@ -856,8 +869,10 @@ class EqualizerOpenGLThread(threading.Thread):
         self._bloom_fbos, self._bloom_texs, self._bloom_size = fbos, texs, (w, h)
         return True
 
-    def _draw_bars_instanced(self, num_bars: int, viewport_px) -> None:
-        """Imposta le uniform delle barre e disegna la passata instanced (riuso)."""
+    def _draw_bars_instanced(self, num_bars: int, viewport_px, radial: bool = False) -> None:
+        """Imposta le uniform delle barre e disegna la passata instanced.
+        radial=True attiva il ramo polare (uRadial) per la modalità Radiale; in radiale
+        ancoraggio specchiato e cime arrotondate sono disattivati (math cartesiana)."""
         glUseProgram(self._bars_program)
         glUniform1f(self._bars_uniforms["uNumBars"], float(num_bars))
         glUniform1f(self._bars_uniforms["uBarWidthFrac"], float(self._bar_width_frac))
@@ -867,9 +882,13 @@ class EqualizerOpenGLThread(threading.Thread):
         glUniform1i(self._bars_uniforms["uColorMode"], int(self._color_mode))
         glUniform3f(self._bars_uniforms["uColorA"], *self._color_a)
         glUniform3f(self._bars_uniforms["uColorB"], *self._color_b)
-        glUniform1f(self._bars_uniforms["uMirror"], 1.0 if self._mirror else 0.0)
-        glUniform1f(self._bars_uniforms["uRounded"], 1.0 if self._rounded else 0.0)
+        glUniform1f(self._bars_uniforms["uMirror"], 0.0 if radial else (1.0 if self._mirror else 0.0))
+        glUniform1f(self._bars_uniforms["uRounded"], 0.0 if radial else (1.0 if self._rounded else 0.0))
         glUniform2f(self._bars_uniforms["uViewportPx"], float(viewport_px[0]), float(viewport_px[1]))
+        glUniform1f(self._bars_uniforms["uRadial"], 1.0 if radial else 0.0)
+        glUniform1f(self._bars_uniforms["uInnerRadius"], float(self._inner_radius))
+        aspect = float(self._fb_width) / max(float(self._fb_height), 1.0)
+        glUniform1f(self._bars_uniforms["uAspect"], aspect)
         glBindVertexArray(self._bars_vao)
         glDrawArraysInstanced(GL_TRIANGLES, 0, 6, num_bars)
         glBindVertexArray(0)
