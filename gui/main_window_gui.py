@@ -58,6 +58,9 @@ _THEME_MODE = {"Light": "light", "Dark": "dark", "System": "auto"}
 # Etichette del menu "Modalità colore" -> intero uColorMode del renderer.
 _COLOR_MODE_TO_INT = {"Classico": 0, "Tinta unica": 1, "Gradiente": 2, "Spettro": 3}
 
+# Etichette del menu "Modalità" -> intero self._mode del renderer.
+_VIZ_MODE_TO_INT = {"Barre": 0, "Radiale": 1, "Oscilloscopio": 2, "Linea/Area": 3}
+
 
 class AudioCaptureGUI(QMainWindow):
     """
@@ -105,6 +108,14 @@ class AudioCaptureGUI(QMainWindow):
         self.fx_beat_enabled = False
         self.fx_beat_intensity = 0.08
         self.fx_beat_sensitivity = 1.5
+
+        # Stato GUI modalità di visualizzazione (Blocco 3). Default = Barre.
+        self.viz_mode = 0
+        self.viz_inner_radius = 0.18
+        self.viz_line_thickness = 0.012
+        self.viz_fill = True
+        self.viz_osc_mirror = False
+        self.viz_osc_smoothing = 0.5
         self.bg_video_path = None  # path del video di sfondo selezionato (None = immagine)
         self.selected_monitor = None
         self.available_monitors = self.get_available_monitors()
@@ -224,13 +235,24 @@ class AudioCaptureGUI(QMainWindow):
         self.tabview.addTab(self._build_visualization_tab(), "🎨 Visualizzazione")
         self.tabview.addTab(self._build_audio_tab(), "🎵 Audio")
         self.tabview.addTab(self._build_advanced_tab(), "⚙️ Avanzate")
-        self.tabview.addTab(self._build_bars_tab(), "🎛️ Barre")
+        self.tabview.addTab(self._build_shape_tab(), "🎛️ Forma")
         self.tabview.addTab(self._build_effects_tab(), "✨ Effetti")
         parent_layout.addWidget(self.tabview, 1)
+
+        # Visibilità condizionale iniziale dei controlli di forma/effetti (modalità Barre).
+        self.on_viz_mode_changed("Barre")
 
     def _build_visualization_tab(self) -> QWidget:
         tab = QWidget()
         v = QVBoxLayout(tab)
+
+        self.viz_mode_option = OptionMenuCustomFrame(
+            header_name='Modalità:',
+            values=["Barre", "Radiale", "Oscilloscopio", "Linea/Area"],
+            initial_value="Barre",
+            command=self.on_viz_mode_changed,
+        )
+        v.addWidget(self.viz_mode_option)
 
         self.appearance_mode = OptionMenuCustomFrame(
             header_name='Tema:',
@@ -356,7 +378,7 @@ class AudioCaptureGUI(QMainWindow):
         v.addStretch(1)
         return tab
 
-    def _build_bars_tab(self) -> QWidget:
+    def _build_shape_tab(self) -> QWidget:
         tab = QWidget()
         v = QVBoxLayout(tab)
 
@@ -442,6 +464,44 @@ class AudioCaptureGUI(QMainWindow):
         )
         v.addWidget(self.bars_order_option)
 
+        # Radiale
+        self.viz_inner_radius_slider = SliderCustomFrame(
+            header_name='Raggio foro:',
+            command=self.update_inner_radius,
+            from_=0.0, to=0.8,
+            initial_value=self.viz_inner_radius,
+        )
+        v.addWidget(self.viz_inner_radius_slider)
+
+        # Oscilloscopio / Linea-Area
+        self.viz_thickness_slider = SliderCustomFrame(
+            header_name='Spessore linea:',
+            command=self.update_line_thickness,
+            from_=0.002, to=0.06,
+            initial_value=self.viz_line_thickness,
+        )
+        v.addWidget(self.viz_thickness_slider)
+
+        # Linea/Area
+        self.viz_fill_option = OptionMenuCustomFrame(
+            header_name='Riempimento:', values=["Linea", "Area"], initial_value="Area",
+            command=self.update_fill)
+        v.addWidget(self.viz_fill_option)
+
+        # Oscilloscopio
+        self.viz_osc_mirror_option = OptionMenuCustomFrame(
+            header_name='Specchiato:', values=["No", "Sì"], initial_value="No",
+            command=self.update_osc_mirror)
+        v.addWidget(self.viz_osc_mirror_option)
+
+        self.viz_osc_smooth_slider = SliderCustomFrame(
+            header_name='Fluidità (oscill.):',
+            command=self.update_osc_smoothing,
+            from_=0.0, to=1.0,
+            initial_value=self.viz_osc_smoothing,
+        )
+        v.addWidget(self.viz_osc_smooth_slider)
+
         v.addStretch(1)
 
         # Imposta la visibilità condizionale iniziale (modalità = Classico)
@@ -452,7 +512,8 @@ class AudioCaptureGUI(QMainWindow):
         tab = QWidget()
         v = QVBoxLayout(tab)
 
-        v.addWidget(self._make_label("Peak-cap", font_label()))
+        self.fx_peakcap_label = self._make_label("Peak-cap", font_label())
+        v.addWidget(self.fx_peakcap_label)
         self.fx_peakcap_option = OptionMenuCustomFrame(
             header_name='Peak-cap:', values=["Off", "On"], initial_value="Off",
             command=self.update_peakcap_enabled)
@@ -632,6 +693,57 @@ class AudioCaptureGUI(QMainWindow):
         self.bars_color_mode = _COLOR_MODE_TO_INT.get(label, 0)
         if self.equalizer_opengl_thread:
             self.equalizer_control_queue.put({"type": "set_color_mode", "value": self.bars_color_mode})
+
+    def on_viz_mode_changed(self, label: str):
+        """Mostra solo i controlli di forma pertinenti alla modalità e inoltra la scelta."""
+        bars = label == "Barre"
+        radial = label == "Radiale"
+        osc = label == "Oscilloscopio"
+        line = label == "Linea/Area"
+        # Forma (tab "🎛️ Forma")
+        self.bars_width_slider.setVisible(bars or radial)
+        self.bars_rounded_option.setVisible(bars)
+        self.bars_anchor_option.setVisible(bars)
+        self.bars_order_option.setVisible(bars or radial or line)
+        self.viz_inner_radius_slider.setVisible(radial)
+        self.viz_thickness_slider.setVisible(osc or line)
+        self.viz_fill_option.setVisible(line)
+        self.viz_osc_mirror_option.setVisible(osc)
+        self.viz_osc_smooth_slider.setVisible(osc)
+        # Peak-cap: solo in modalità Barre (tab "✨ Effetti")
+        self.fx_peakcap_label.setVisible(bars)
+        self.fx_peakcap_option.setVisible(bars)
+        self.fx_peakcap_color_picker.setVisible(bars)
+        self.fx_peakcap_hold_slider.setVisible(bars)
+        self.fx_peakcap_fall_slider.setVisible(bars)
+        self.viz_mode = _VIZ_MODE_TO_INT.get(label, 0)
+        if self.equalizer_opengl_thread:
+            self.equalizer_control_queue.put({"type": "set_viz_mode", "value": self.viz_mode})
+
+    def update_inner_radius(self, value):
+        self.viz_inner_radius = float(value)
+        if self.equalizer_opengl_thread:
+            self.equalizer_control_queue.put({"type": "set_inner_radius", "value": float(value)})
+
+    def update_line_thickness(self, value):
+        self.viz_line_thickness = float(value)
+        if self.equalizer_opengl_thread:
+            self.equalizer_control_queue.put({"type": "set_line_thickness", "value": float(value)})
+
+    def update_fill(self, label):
+        self.viz_fill = (label == "Area")
+        if self.equalizer_opengl_thread:
+            self.equalizer_control_queue.put({"type": "set_fill", "value": self.viz_fill})
+
+    def update_osc_mirror(self, label):
+        self.viz_osc_mirror = (label == "Sì")
+        if self.equalizer_opengl_thread:
+            self.equalizer_control_queue.put({"type": "set_osc_mirror", "value": self.viz_osc_mirror})
+
+    def update_osc_smoothing(self, value):
+        self.viz_osc_smoothing = float(value)
+        if self.equalizer_opengl_thread:
+            self.equalizer_control_queue.put({"type": "set_osc_smoothing", "value": float(value)})
 
     def update_color_a(self, rgb):
         self.bars_color_a = rgb
@@ -883,6 +995,12 @@ class AudioCaptureGUI(QMainWindow):
                 beat_sensitivity=self.fx_beat_sensitivity,
                 bloom_enabled=self.fx_bloom_enabled,
                 bloom_intensity=self.fx_bloom_intensity,
+                mode=self.viz_mode,
+                inner_radius=self.viz_inner_radius,
+                line_thickness=self.viz_line_thickness,
+                fill=self.viz_fill,
+                osc_mirror=self.viz_osc_mirror,
+                osc_smoothing=self.viz_osc_smoothing,
                 monitor=self.selected_monitor,
                 window_close_callback=self.opengl_window_closed,
             )
