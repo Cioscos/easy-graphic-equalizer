@@ -869,6 +869,15 @@ class EqualizerOpenGLThread(threading.Thread):
         elif message_type == 'set_peakcap_fall':
             self._peakcap_fall = float(message['value'])
 
+        elif message_type == 'set_beat_enabled':
+            self._beat_enabled = bool(message['value'])
+
+        elif message_type == 'set_beat_intensity':
+            self._beat_intensity = float(message['value'])
+
+        elif message_type == 'set_beat_sensitivity':
+            self._beat_sensitivity = float(message['value'])
+
         elif message_type == 'set_image':
             # L'immagine sostituisce il video: ferma l'eventuale riproduzione.
             self._stop_video()
