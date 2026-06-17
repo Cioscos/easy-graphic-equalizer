@@ -94,6 +94,17 @@ class AudioCaptureGUI(QMainWindow):
         self.bars_rounded = False
         self.bars_anchor_center = False
         self.bars_band_symmetric = False
+
+        # Stato GUI effetti reattivi (Blocco 2). Default = OFF.
+        self.fx_peakcap_enabled = False
+        self.fx_peakcap_color = (1.0, 1.0, 1.0)
+        self.fx_peakcap_hold = 0.5
+        self.fx_peakcap_fall = 0.8
+        self.fx_bloom_enabled = False
+        self.fx_bloom_intensity = 1.0
+        self.fx_beat_enabled = False
+        self.fx_beat_intensity = 0.08
+        self.fx_beat_sensitivity = 1.5
         self.bg_video_path = None  # path del video di sfondo selezionato (None = immagine)
         self.selected_monitor = None
         self.available_monitors = self.get_available_monitors()
@@ -214,6 +225,7 @@ class AudioCaptureGUI(QMainWindow):
         self.tabview.addTab(self._build_audio_tab(), "🎵 Audio")
         self.tabview.addTab(self._build_advanced_tab(), "⚙️ Avanzate")
         self.tabview.addTab(self._build_bars_tab(), "🎛️ Barre")
+        self.tabview.addTab(self._build_effects_tab(), "✨ Effetti")
         parent_layout.addWidget(self.tabview, 1)
 
     def _build_visualization_tab(self) -> QWidget:
@@ -436,6 +448,59 @@ class AudioCaptureGUI(QMainWindow):
         self.on_color_mode_changed("Classico")
         return tab
 
+    def _build_effects_tab(self) -> QWidget:
+        tab = QWidget()
+        v = QVBoxLayout(tab)
+
+        v.addWidget(self._make_label("Peak-cap", font_label()))
+        self.fx_peakcap_option = OptionMenuCustomFrame(
+            header_name='Peak-cap:', values=["Off", "On"], initial_value="Off",
+            command=self.update_peakcap_enabled)
+        v.addWidget(self.fx_peakcap_option)
+        self.fx_peakcap_color_picker = ColorPickerFrame(
+            header_name='Colore cap:', initial_color='#ffffff', command=self.update_peakcap_color)
+        v.addWidget(self.fx_peakcap_color_picker)
+        self.fx_peakcap_hold_slider = SliderCustomFrame(
+            header_name='Hold (ms):', command=self.update_peakcap_hold,
+            from_=0, to=2000, initial_value=int(self.fx_peakcap_hold * 1000),
+            value_type=SliderCustomFrame.ValueType.INT)
+        v.addWidget(self.fx_peakcap_hold_slider)
+        self.fx_peakcap_fall_slider = SliderCustomFrame(
+            header_name='Caduta (/s):', command=self.update_peakcap_fall,
+            from_=0.1, to=3.0, initial_value=self.fx_peakcap_fall,
+            value_type=SliderCustomFrame.ValueType.DOUBLE)
+        v.addWidget(self.fx_peakcap_fall_slider)
+
+        v.addWidget(self._make_label("Glow (bloom)", font_label()))
+        self.fx_bloom_option = OptionMenuCustomFrame(
+            header_name='Glow:', values=["Off", "On"], initial_value="Off",
+            command=self.update_bloom_enabled)
+        v.addWidget(self.fx_bloom_option)
+        self.fx_bloom_slider = SliderCustomFrame(
+            header_name='Intensità:', command=self.update_bloom_intensity,
+            from_=0.0, to=3.0, initial_value=self.fx_bloom_intensity,
+            value_type=SliderCustomFrame.ValueType.DOUBLE)
+        v.addWidget(self.fx_bloom_slider)
+
+        v.addWidget(self._make_label("Beat pulse", font_label()))
+        self.fx_beat_option = OptionMenuCustomFrame(
+            header_name='Beat pulse:', values=["Off", "On"], initial_value="Off",
+            command=self.update_beat_enabled)
+        v.addWidget(self.fx_beat_option)
+        self.fx_beat_intensity_slider = SliderCustomFrame(
+            header_name='Intensità zoom:', command=self.update_beat_intensity,
+            from_=0.0, to=0.3, initial_value=self.fx_beat_intensity,
+            value_type=SliderCustomFrame.ValueType.DOUBLE)
+        v.addWidget(self.fx_beat_intensity_slider)
+        self.fx_beat_sens_slider = SliderCustomFrame(
+            header_name='Sensibilità:', command=self.update_beat_sensitivity,
+            from_=1.05, to=3.0, initial_value=self.fx_beat_sensitivity,
+            value_type=SliderCustomFrame.ValueType.DOUBLE)
+        v.addWidget(self.fx_beat_sens_slider)
+
+        v.addStretch(1)
+        return tab
+
     # --- Device --------------------------------------------------------------
     async def get_devices(self):
         with ThreadPoolExecutor() as executor:
@@ -608,6 +673,51 @@ class AudioCaptureGUI(QMainWindow):
         if self.equalizer_opengl_thread:
             self.equalizer_control_queue.put({"type": "set_band_order", "value": self.bars_band_symmetric})
 
+    def update_peakcap_enabled(self, label):
+        self.fx_peakcap_enabled = (label == "On")
+        if self.equalizer_opengl_thread:
+            self.equalizer_control_queue.put({"type": "set_peakcap_enabled", "value": self.fx_peakcap_enabled})
+
+    def update_peakcap_color(self, rgb):
+        self.fx_peakcap_color = rgb
+        if self.equalizer_opengl_thread:
+            self.equalizer_control_queue.put({"type": "set_peakcap_color", "value": rgb})
+
+    def update_peakcap_hold(self, value):
+        self.fx_peakcap_hold = float(value) / 1000.0
+        if self.equalizer_opengl_thread:
+            self.equalizer_control_queue.put({"type": "set_peakcap_hold", "value": float(value) / 1000.0})
+
+    def update_peakcap_fall(self, value):
+        self.fx_peakcap_fall = float(value)
+        if self.equalizer_opengl_thread:
+            self.equalizer_control_queue.put({"type": "set_peakcap_fall", "value": float(value)})
+
+    def update_bloom_enabled(self, label):
+        self.fx_bloom_enabled = (label == "On")
+        if self.equalizer_opengl_thread:
+            self.equalizer_control_queue.put({"type": "set_bloom_enabled", "value": self.fx_bloom_enabled})
+
+    def update_bloom_intensity(self, value):
+        self.fx_bloom_intensity = float(value)
+        if self.equalizer_opengl_thread:
+            self.equalizer_control_queue.put({"type": "set_bloom_intensity", "value": float(value)})
+
+    def update_beat_enabled(self, label):
+        self.fx_beat_enabled = (label == "On")
+        if self.equalizer_opengl_thread:
+            self.equalizer_control_queue.put({"type": "set_beat_enabled", "value": self.fx_beat_enabled})
+
+    def update_beat_intensity(self, value):
+        self.fx_beat_intensity = float(value)
+        if self.equalizer_opengl_thread:
+            self.equalizer_control_queue.put({"type": "set_beat_intensity", "value": float(value)})
+
+    def update_beat_sensitivity(self, value):
+        self.fx_beat_sensitivity = float(value)
+        if self.equalizer_opengl_thread:
+            self.equalizer_control_queue.put({"type": "set_beat_sensitivity", "value": float(value)})
+
     def update_db_floor(self, value):
         # Parametri DSP del tab Avanzate: solo renderer OpenGL (come bars_alpha).
         if self.equalizer_opengl_thread:
@@ -764,6 +874,15 @@ class AudioCaptureGUI(QMainWindow):
                 rounded=self.bars_rounded,
                 mirror=self.bars_anchor_center,
                 band_order_symmetric=self.bars_band_symmetric,
+                peakcap_enabled=self.fx_peakcap_enabled,
+                peakcap_color=self.fx_peakcap_color,
+                peakcap_hold=self.fx_peakcap_hold,
+                peakcap_fall=self.fx_peakcap_fall,
+                beat_enabled=self.fx_beat_enabled,
+                beat_intensity=self.fx_beat_intensity,
+                beat_sensitivity=self.fx_beat_sensitivity,
+                bloom_enabled=self.fx_bloom_enabled,
+                bloom_intensity=self.fx_bloom_intensity,
                 monitor=self.selected_monitor,
                 window_close_callback=self.opengl_window_closed,
             )
