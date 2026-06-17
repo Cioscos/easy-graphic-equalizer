@@ -38,6 +38,12 @@ TILT_DB_PER_OCT = 0.0
 DEFAULT_COLOR_A = (0.231, 0.420, 1.0)   # blu  (#3b6bff): tinta / base gradiente
 DEFAULT_COLOR_B = (1.0, 0.231, 0.816)   # magenta (#ff3bd0): cima gradiente
 
+# --- Effetti reattivi (Blocco 2). Default OFF: nessun cambiamento visivo. ---
+DEFAULT_PEAKCAP_COLOR = (1.0, 1.0, 1.0)   # bianco
+PEAKCAP_HOLD = 0.5        # s di hold prima della caduta
+PEAKCAP_FALL = 0.8        # frazione di altezza al secondo
+CAP_THICKNESS = 0.012     # spessore del trattino (frazione di altezza finestra)
+
 # --- Aspetto delle barre (ex magic number) ---
 BAR_WIDTH_FRAC = 0.8    # frazione dello slot occupata dalla barra (il resto è spazio)
 GREEN_SPLIT = 0.5       # sotto questa frazione d'altezza finestra → verde
@@ -239,6 +245,10 @@ class EqualizerOpenGLThread(threading.Thread):
                  rounded: bool = False,
                  mirror: bool = False,
                  band_order_symmetric: bool = False,
+                 peakcap_enabled: bool = False,
+                 peakcap_color: tuple = DEFAULT_PEAKCAP_COLOR,
+                 peakcap_hold: float = PEAKCAP_HOLD,
+                 peakcap_fall: float = PEAKCAP_FALL,
                  window_close_callback: Callable = None):
         super().__init__()
         self._audio_queue = audio_queue
@@ -276,6 +286,17 @@ class EqualizerOpenGLThread(threading.Thread):
         # Dimensione framebuffer (px), serve al cap arrotondato; reale in run().
         self._fb_width = 1.0
         self._fb_height = 1.0
+
+        # --- Peak-cap (Blocco 2) ---
+        self._peakcap_enabled = bool(peakcap_enabled)
+        self._peakcap_color = tuple(peakcap_color)
+        self._peakcap_hold = float(peakcap_hold)
+        self._peakcap_fall = float(peakcap_fall)
+        # self._n_bands è già impostato; self.frequency_bands viene creato solo più
+        # tardi da _setup_bands. _update_peaks ridimensiona comunque se cambia il
+        # numero di barre visualizzate (es. ordine simmetrico).
+        self._peaks = np.zeros(self._n_bands, dtype=np.float32)
+        self._peak_age = np.zeros(self._n_bands, dtype=np.float32)
 
         # Oggetti OpenGL (creati in init_gl_objects una volta attivo il contesto)
         self._bars_program = None
@@ -742,6 +763,25 @@ class EqualizerOpenGLThread(threading.Thread):
             # Torna all'immagine di sfondo (se presente).
             self._stop_video()
             self._background_texture = self.load_texture()
+
+    def _update_peaks(self, heights: np.ndarray, dt: float) -> np.ndarray:
+        """
+        Aggiorna i picchi per-barra (peak-cap): scatto al nuovo massimo, hold, poi
+        caduta frame-rate-independent. Lavora sulle altezze già disposte.
+        """
+        n = heights.shape[0]
+        if self._peaks.shape[0] != n:
+            self._peaks = np.zeros(n, dtype=np.float32)
+            self._peak_age = np.zeros(n, dtype=np.float32)
+        rising = heights >= self._peaks
+        self._peaks[rising] = heights[rising]
+        self._peak_age[rising] = 0.0
+        held = ~rising
+        self._peak_age[held] += dt
+        falling = held & (self._peak_age > self._peakcap_hold)
+        self._peaks[falling] -= self._peakcap_fall * dt
+        np.clip(self._peaks, 0.0, 1.0, out=self._peaks)
+        return self._peaks
 
     def smooth_amplitudes(self, targets, delta_time: float) -> np.ndarray:
         """
