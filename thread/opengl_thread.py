@@ -166,6 +166,34 @@ void main() {
 }
 """
 
+# --- Shader peak-cap: trattino sottile instanced all'altezza del picco ---
+_CAPS_VERTEX_SRC = """
+#version 330 core
+layout(location = 0) in vec2 aUnitPos;   // quad unitario [0,1]^2 (condiviso con le barre)
+layout(location = 1) in float aPeak;     // picco normalizzato per-istanza [0,1]
+uniform float uNumBars;
+uniform float uBarWidthFrac;
+uniform float uMirror;
+uniform float uCapThickness;
+void main() {
+    float slot = 1.0 / uNumBars;
+    float xLeft = (float(gl_InstanceID) + 0.5 * (1.0 - uBarWidthFrac)) * slot;
+    float x = xLeft + aUnitPos.x * (slot * uBarWidthFrac);
+    float yTopBottom = aPeak;              // estremità superiore, ancoraggio dal basso
+    float yTopCenter = 0.5 + 0.5 * aPeak;  // estremità superiore, ancoraggio specchiato
+    float yc = mix(yTopBottom, yTopCenter, uMirror);
+    float y = yc + (aUnitPos.y - 0.5) * uCapThickness;  // trattino sottile attorno a yc
+    gl_Position = vec4(x * 2.0 - 1.0, y * 2.0 - 1.0, 0.0, 1.0);
+}
+"""
+
+_CAPS_FRAGMENT_SRC = """
+#version 330 core
+out vec4 FragColor;
+uniform vec3 uCapColor;
+void main() { FragColor = vec4(uCapColor, 1.0); }
+"""
+
 # Sfondo: quad fullscreen testurizzato. L'alpha è una uniform → nessuna ricreazione
 # della texture quando cambia (niente più re-upload né leak).
 # uFlipV capovolge la coordinata v a costo zero: le immagini sono già flippate in CPU
@@ -309,6 +337,11 @@ class EqualizerOpenGLThread(threading.Thread):
         self._bg_vbo = None
         self._bars_uniforms = {}
         self._bg_uniforms = {}
+        self._caps_program = None
+        self._caps_vao = None
+        self._peaks_vbo = None
+        self._peaks_capacity = 0
+        self._caps_uniforms = {}
 
         self.stop_event = threading.Event()
         self._background_texture = None
@@ -551,6 +584,28 @@ class EqualizerOpenGLThread(threading.Thread):
         glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, stride, ctypes.c_void_p(2 * 4))
         glBindVertexArray(0)
 
+        # --- Programma + VAO/VBO peak-cap (riusa il quad unitario delle barre) ---
+        self._caps_program = compileProgram(
+            compileShader(_CAPS_VERTEX_SRC, GL_VERTEX_SHADER),
+            compileShader(_CAPS_FRAGMENT_SRC, GL_FRAGMENT_SHADER),
+        )
+        self._caps_uniforms = {
+            name: glGetUniformLocation(self._caps_program, name)
+            for name in ("uNumBars", "uBarWidthFrac", "uMirror", "uCapThickness", "uCapColor")
+        }
+        self._caps_vao = glGenVertexArrays(1)
+        glBindVertexArray(self._caps_vao)
+        glBindBuffer(GL_ARRAY_BUFFER, self._bars_quad_vbo)   # quad unitario condiviso
+        glEnableVertexAttribArray(0)
+        glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, ctypes.c_void_p(0))
+        self._peaks_vbo = glGenBuffers(1)
+        glBindBuffer(GL_ARRAY_BUFFER, self._peaks_vbo)
+        glEnableVertexAttribArray(1)
+        glVertexAttribPointer(1, 1, GL_FLOAT, GL_FALSE, 0, ctypes.c_void_p(0))
+        glVertexAttribDivisor(1, 1)
+        self._peaks_capacity = 0
+        glBindVertexArray(0)
+
     def _ensure_heights_capacity(self, n: int) -> None:
         """
         Garantisce che il VBO delle altezze possa contenere almeno n float.
@@ -562,6 +617,14 @@ class EqualizerOpenGLThread(threading.Thread):
         glBufferData(GL_ARRAY_BUFFER, n * 4, None, GL_STREAM_DRAW)
         self._heights_capacity = n
 
+    def _ensure_peaks_capacity(self, n: int) -> None:
+        """Garantisce che il VBO dei picchi contenga almeno n float."""
+        if n <= self._peaks_capacity:
+            return
+        glBindBuffer(GL_ARRAY_BUFFER, self._peaks_vbo)
+        glBufferData(GL_ARRAY_BUFFER, n * 4, None, GL_STREAM_DRAW)
+        self._peaks_capacity = n
+
     def _display_heights(self, heights: np.ndarray) -> np.ndarray:
         """
         Applica la disposizione delle barre prima dell'upload: identità in ordine
@@ -571,7 +634,7 @@ class EqualizerOpenGLThread(threading.Thread):
             return arrange_symmetric(heights)
         return heights
 
-    def _render(self, heights: np.ndarray) -> None:
+    def _render(self, heights: np.ndarray, dt: float) -> None:
         """
         Disegna un frame: pulisce, disegna lo sfondo (se presente) e poi le barre
         con una sola draw call instanced.
@@ -633,6 +696,25 @@ class EqualizerOpenGLThread(threading.Thread):
         glDrawArraysInstanced(GL_TRIANGLES, 0, 6, num_bars)
         glBindVertexArray(0)
 
+        # --- Peak-cap (Blocco 2): aggiorna i picchi e disegna i trattini ---
+        if self._peakcap_enabled:
+            peaks = self._update_peaks(heights, dt)
+            if peaks.dtype != np.float32 or not peaks.flags["C_CONTIGUOUS"]:
+                peaks = np.ascontiguousarray(peaks, dtype=np.float32)
+            self._ensure_peaks_capacity(num_bars)
+            glBindBuffer(GL_ARRAY_BUFFER, self._peaks_vbo)
+            glBufferSubData(GL_ARRAY_BUFFER, 0, peaks.nbytes, peaks)
+            glUseProgram(self._caps_program)
+            glUniform1f(self._caps_uniforms["uNumBars"], float(num_bars))
+            glUniform1f(self._caps_uniforms["uBarWidthFrac"], float(self._bar_width_frac))
+            glUniform1f(self._caps_uniforms["uMirror"], 1.0 if self._mirror else 0.0)
+            glUniform1f(self._caps_uniforms["uCapThickness"], CAP_THICKNESS)
+            glUniform3f(self._caps_uniforms["uCapColor"], *self._peakcap_color)
+            glBindVertexArray(self._caps_vao)
+            glDrawArraysInstanced(GL_TRIANGLES, 0, 6, num_bars)
+            glBindVertexArray(0)
+        return
+
     def _cleanup_gl(self) -> None:
         """
         Elimina tutte le risorse OpenGL (programmi, VAO, VBO, texture). Idempotente
@@ -651,13 +733,13 @@ class EqualizerOpenGLThread(threading.Thread):
         if self._video_texture:
             _safe(lambda: glDeleteTextures(1, [self._video_texture]))
             self._video_texture = None
-        for vbo in (self._bars_quad_vbo, self._heights_vbo, self._bg_vbo):
+        for vbo in (self._bars_quad_vbo, self._heights_vbo, self._bg_vbo, self._peaks_vbo):
             if vbo:
                 _safe(lambda v=vbo: glDeleteBuffers(1, [v]))
-        for vao in (self._bars_vao, self._bg_vao):
+        for vao in (self._bars_vao, self._bg_vao, self._caps_vao):
             if vao:
                 _safe(lambda v=vao: glDeleteVertexArrays(1, [v]))
-        for prog in (self._bars_program, self._bg_program):
+        for prog in (self._bars_program, self._bg_program, self._caps_program):
             if prog:
                 _safe(lambda p=prog: glDeleteProgram(p))
 
@@ -665,6 +747,8 @@ class EqualizerOpenGLThread(threading.Thread):
         self._bars_vao = self._bg_vao = None
         self._bars_program = self._bg_program = None
         self._heights_capacity = 0
+        self._peaks_vbo = self._caps_vao = self._caps_program = None
+        self._peaks_capacity = 0
 
     def process_control_message(self, message):
         """
@@ -951,7 +1035,7 @@ class EqualizerOpenGLThread(threading.Thread):
                     self._advance_video(frame_delta)
 
                 # 4) Disegna il frame (sfondo + barre instanced) con i valori smoothed
-                self._render(smoothed_amplitudes)
+                self._render(smoothed_amplitudes, frame_delta)
 
                 glfw.swap_buffers(window)
                 glfw.poll_events()
