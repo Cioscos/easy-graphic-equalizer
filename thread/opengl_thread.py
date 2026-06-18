@@ -23,7 +23,7 @@ MAX_FREQ = 20000
 
 GENERAL_LOG = False
 FFT_LOGS = False
-PERF_LOGS = True
+PERF_LOGS = False
 
 # --- Taratura fedeltà/latenza (regolabili a vista) ---
 # Scala dB assoluta: l'altezza barra riflette il livello reale del segnale.

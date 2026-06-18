@@ -63,3 +63,7 @@ class BackgroundFilepickerFrame(QWidget):
         """Restituisce il path corrente (digitato a mano o scelto dal dialog)."""
         text = self.image_path_entry.text().strip()
         return text or None
+
+    def set_filename(self, path: str) -> None:
+        """Mostra `path` nel campo (senza applicarlo): usato dal caricamento profili."""
+        self.image_path_entry.setText(path or "")

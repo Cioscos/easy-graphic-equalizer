@@ -114,3 +114,15 @@ class SliderCustomFrame(QWidget):
         if self._is_int:
             return int(self._slider.value())
         return self._from_ticks(self._slider.value())
+
+    def set_value(self, value: Union[float, int]) -> None:
+        """Imposta il valore mostrato senza invocare la command (caricamento profili)."""
+        self._slider.blockSignals(True)
+        if self._is_int:
+            self._slider.setValue(int(round(value)))
+        else:
+            self._slider.setValue(self._to_ticks(value))
+        self._slider.blockSignals(False)
+        self._refresh_value_label()
+        if self._warning_trigger_value:
+            self.warning_label.setVisible(self._warning_trigger_value <= self.get_value())
