@@ -19,7 +19,11 @@ def main() -> int:
     app = QApplication(sys.argv)
 
     # Tema agganciato a quello di sistema (equivalente al 'System' di CustomTkinter).
-    qdarktheme.setup_theme("auto")
+    # theme_kwargs() aggiunge accento di brand + QSS strutturale (vedi gui/theme.py);
+    # importarlo qui è sicuro perché theme.py dipende solo da QFont (no soundcard),
+    # quindi non altera l'ordine COM/QApplication descritto sopra.
+    from gui.theme import theme_kwargs
+    qdarktheme.setup_theme("auto", **theme_kwargs())
 
     from gui.main_window_gui import AudioCaptureGUI
     gui = AudioCaptureGUI()
