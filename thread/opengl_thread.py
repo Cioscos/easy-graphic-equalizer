@@ -57,6 +57,11 @@ BAR_WIDTH_FRAC = 0.8    # frazione dello slot occupata dalla barra (il resto è 
 GREEN_SPLIT = 0.5       # sotto questa frazione d'altezza finestra → verde
 YELLOW_SPLIT = 0.8      # tra GREEN_SPLIT e questa → giallo; oltre → rosso
 
+# --- Antialiasing ---
+# Campioni MSAA richiesti sul framebuffer di default (smussa i bordi di tutte le
+# modalità). Fissato alla creazione della finestra: non modificabile a caldo.
+MSAA_SAMPLES = 4
+
 # --- Modalità di visualizzazione (Blocco 3) ---
 MODE_BARS = 0          # barre verticali (attuale, default)
 MODE_RADIAL = 1        # barre disposte in cerchio
@@ -1486,6 +1491,8 @@ class EqualizerOpenGLThread(threading.Thread):
             glfw.window_hint(glfw.CONTEXT_VERSION_MINOR, 3)
             glfw.window_hint(glfw.OPENGL_PROFILE, glfw.OPENGL_CORE_PROFILE)
             glfw.window_hint(glfw.OPENGL_FORWARD_COMPAT, glfw.TRUE)
+            # MSAA: richiedi un framebuffer di default multisample (antialiasing hardware).
+            glfw.window_hint(glfw.SAMPLES, MSAA_SAMPLES)
 
             window = glfw.create_window(self.window_width, self.window_height, "Audio Visualizer", selected_monitor, None)
             if not window:
@@ -1511,6 +1518,11 @@ class EqualizerOpenGLThread(threading.Thread):
             glEnable(GL_BLEND)
             glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
             glClearColor(0.0, 0.0, 0.0, 1.0)
+
+            # Abilita l'MSAA (no-op se il driver non ha concesso il framebuffer multisample)
+            glEnable(GL_MULTISAMPLE)
+            if GENERAL_LOG:
+                print(f"[GL] MSAA samples concessi: {glGetIntegerv(GL_SAMPLES)}")
 
             # Disable auto iconify
             glfw.set_window_attrib(window, glfw.AUTO_ICONIFY, glfw.FALSE)
