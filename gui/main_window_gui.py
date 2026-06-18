@@ -8,22 +8,23 @@ from PIL import Image
 import glfw
 import qdarktheme
 
-from PySide6.QtCore import Qt, QThread, QTimer, Signal
-from PySide6.QtGui import QIcon
+from PySide6.QtCore import Qt, Signal
+from PySide6.QtGui import QIcon, QAction, QActionGroup
 from PySide6.QtWidgets import (
     QFrame,
-    QHBoxLayout,
+    QGroupBox,
     QLabel,
     QListWidget,
     QMainWindow,
     QMessageBox,
-    QTabWidget,
+    QScrollArea,
+    QSplitter,
+    QStackedWidget,
     QVBoxLayout,
     QWidget,
 )
 
 from thread.audioCaptureThread import AudioCaptureThread
-from thread.equalizer_preview_worker import EqualizerPreviewWorker
 from thread.opengl_thread import (
     EqualizerOpenGLThread,
     DB_FLOOR, DB_CEILING, ATTACK_TAU, RELEASE_TAU, TILT_DB_PER_OCT,
@@ -33,12 +34,12 @@ from gui.optionmenu_frame import OptionMenuCustomFrame
 from gui.background_filepicker_frame import BackgroundFilepickerFrame
 from gui.help_window import HelpWindow
 from gui.animated_button import AnimatedButton
-from gui.equalizer_preview_widget import EqualizerPreviewWidget
 from gui.color_picker_frame import ColorPickerFrame
 from gui.theme import (
-    font_title, font_button, font_label, font_body,
+    font_button, font_label, font_section, font_body,
+    theme_kwargs,
+    SPACE_SM, SPACE_MD,
     COLOR_NEUTRAL, COLOR_NEUTRAL_HOVER,
-    COLOR_FULLSCREEN, COLOR_FULLSCREEN_HOVER,
     COLOR_START, COLOR_START_HOVER,
     COLOR_STOP, COLOR_STOP_HOVER,
 )
@@ -67,8 +68,8 @@ class AudioCaptureGUI(QMainWindow):
     Finestra principale (PySide6).
 
     Possiede e coordina i thread/le code della pipeline produttore/consumatore.
-    L'anteprima in-window è disegnata da EqualizerPreviewWidget, alimentato da
-    EqualizerPreviewWorker su un QThread tramite il segnale bands_ready.
+    È un pannello di controllo: configura i parametri e lancia il renderer
+    fullscreen OpenGL (EqualizerOpenGLThread), unico consumer dell'audio.
     """
 
     # Emesso quando la finestra OpenGL si chiude: il callback parte sul thread
@@ -80,7 +81,7 @@ class AudioCaptureGUI(QMainWindow):
 
         self.resource_manager = ResourceManager()
         self.setWindowTitle("Sound wave")
-        self.setMinimumSize(800, 600)
+        self.setMinimumSize(900, 620)
 
         # Stato condiviso inizializzato prima della costruzione dei widget
         self.devices = []
@@ -124,61 +125,123 @@ class AudioCaptureGUI(QMainWindow):
         self.audio_queue = None
         self.equalizer_control_queue = queue.Queue()
         self.audio_thread = None
-        self.preview_thread = None      # QThread che ospita il worker DSP
-        self.preview_worker = None      # EqualizerPreviewWorker
         self.equalizer_opengl_thread = None
         self.last_device_selected = None
         self.help_window = None
-        self.is_capturing = False
 
         # Immagine di sfondo di default (PIL): usata dal renderer OpenGL.
         self._default_bg_path = str(self.resource_manager.get_image_path(DEFAULT_BG_IMAGE, 'bg'))
         self.bg_img = Image.open(self._default_bg_path)
 
-        # Costruzione UI
+        # Costruzione UI: pannello di controllo (nessuna anteprima)
+        self._build_menu_bar()
+
         central = QWidget()
         self.setCentralWidget(central)
-        root_layout = QHBoxLayout(central)
-        root_layout.addWidget(self._build_left_panel(), 0)
-        root_layout.addWidget(self._build_right_panel(), 1)
+        root_layout = QVBoxLayout(central)
+        root_layout.setContentsMargins(SPACE_MD, SPACE_MD, SPACE_MD, SPACE_MD)
+        root_layout.setSpacing(SPACE_MD)
 
-        # Sfondo di default sull'anteprima
-        self.equalizer_preview.set_background_image(self._default_bg_path)
-        self.equalizer_preview.set_background_alpha(self.bg_alpha)
+        # Selezione dispositivo (in alto, a tutta larghezza)
+        root_layout.addWidget(self._build_device_selector())
 
+        # Corpo: nav a sinistra | pagina impostazioni a destra
+        nav_widget = self._build_nav()
+        pages_widget = self._build_pages()
+        self.nav.currentRowChanged.connect(self.settings_stack.setCurrentIndex)
+
+        nav_pages = QSplitter(Qt.Orientation.Horizontal)
+        nav_pages.setChildrenCollapsible(False)
+        nav_pages.addWidget(nav_widget)
+        nav_pages.addWidget(pages_widget)
+        nav_pages.setStretchFactor(0, 0)
+        nav_pages.setStretchFactor(1, 1)
+        nav_pages.setSizes([220, 540])
+        root_layout.addWidget(nav_pages, 1)
+
+        # Footer: azione primaria (avvia/ferma il fullscreen)
+        root_layout.addWidget(self._build_footer())
+
+        self.nav.setCurrentRow(0)
         self._opengl_closed.connect(self._on_opengl_closed)
 
     # --- Costruzione pannelli ------------------------------------------------
-    def _build_left_panel(self) -> QWidget:
-        panel = QFrame()
-        panel.setFrameShape(QFrame.Shape.StyledPanel)
-        layout = QVBoxLayout(panel)
+    def _build_menu_bar(self):
+        """Barra dei menu: 'Tema' (Light/Dark/System esclusivi) e 'Aiuto'."""
+        menu_bar = self.menuBar()
 
-        # Selezione device
-        layout.addWidget(self._make_label("Select device:", font_label()))
+        theme_menu = menu_bar.addMenu("Tema")
+        self._theme_action_group = QActionGroup(self)
+        self._theme_action_group.setExclusive(True)
+        for label in ("Light", "Dark", "System"):
+            action = QAction(label, self, checkable=True)
+            action.triggered.connect(
+                lambda _checked, name=label: self.change_appearance_mode_event(name)
+            )
+            self._theme_action_group.addAction(action)
+            theme_menu.addAction(action)
+            if label == "System":  # default come prima (initial_value="System")
+                action.setChecked(True)
+
+        help_menu = menu_bar.addMenu("Aiuto")
+        help_menu.addAction("Apri guida", self.open_help_window)
+
+    def _build_device_selector(self) -> QWidget:
+        """Riga in alto: selezione dispositivo (precondizione per l'avvio)."""
+        container = QWidget()
+        v = QVBoxLayout(container)
+        v.setContentsMargins(0, 0, 0, 0)
+        v.setSpacing(SPACE_SM)
+        v.addWidget(self._make_label("Seleziona dispositivo:", font_label()))
         self.device_listbox = QListWidget()
         self.device_listbox.setFont(font_body())
-        self.device_listbox.setMinimumWidth(260)
-        layout.addWidget(self.device_listbox)
+        self.device_listbox.setMaximumHeight(120)
+        v.addWidget(self.device_listbox)
         asyncio.run(self.load_devices())
+        # Singolo clic per selezionare (più scopribile); il doppio clic resta valido.
+        self.device_listbox.itemClicked.connect(self.on_device_selected)
         self.device_listbox.itemDoubleClicked.connect(self.on_device_selected)
+        return container
 
-        # Impostazioni
-        layout.addWidget(self._make_label("Impostazioni", font_title(), Qt.AlignmentFlag.AlignCenter))
-        self._build_settings_tabs(layout)
+    def _build_nav(self) -> QWidget:
+        """Lista di navigazione (sinistra): seleziona la pagina di impostazioni."""
+        self.nav = QListWidget()
+        self.nav.setObjectName("navList")
+        self.nav.setFont(font_label())
+        self.nav.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.nav.setMinimumWidth(170)
+        self.nav.setMaximumWidth(240)
+        for icon, text in (
+            ("🖥️", "Visualizzazione"),
+            ("🎛️", "Forma"),
+            ("🎨", "Colore"),
+            ("🎵", "Audio"),
+            ("✨", "Effetti"),
+        ):
+            self.nav.addItem(f"{icon}  {text}")
+        return self.nav
 
-        return panel
+    def _build_pages(self) -> QWidget:
+        """Pile delle pagine di impostazioni (destra)."""
+        self.settings_stack = QStackedWidget()
+        self._build_settings_pages()
+        return self.settings_stack
 
-    def _build_right_panel(self) -> QWidget:
-        panel = QFrame()
-        panel.setFrameShape(QFrame.Shape.StyledPanel)
-        layout = QVBoxLayout(panel)
-
-        self.equalizer_preview = EqualizerPreviewWidget()
-        layout.addWidget(self.equalizer_preview, 1)
-
-        layout.addWidget(self._build_action_buttons())
-        return panel
+    def _build_footer(self) -> QWidget:
+        """Azione primaria a tutta larghezza: avvia/ferma il fullscreen OpenGL."""
+        self.fullscreen_btn = AnimatedButton(
+            text="Avvia a schermo intero",
+            command=self.fullscreen_command,
+            icon=QIcon(str(self.resource_manager.get_image_path('maximize.png', 'icons'))),
+            icon_size=20,
+            font=font_button(),
+            fg_color=COLOR_NEUTRAL,  # grigio finché non si seleziona un dispositivo
+            hover_color=COLOR_NEUTRAL_HOVER,
+            enabled=False,
+            corner_radius=10,
+            height=48,
+        )
+        return self.fullscreen_btn
 
     def _make_label(self, text, font, alignment=None) -> QLabel:
         label = QLabel(text)
@@ -187,102 +250,83 @@ class AudioCaptureGUI(QMainWindow):
             label.setAlignment(alignment)
         return label
 
-    def _build_action_buttons(self) -> QWidget:
-        container = QWidget()
-        row = QHBoxLayout(container)
+    def _build_settings_pages(self):
+        """Costruisce le pagine impostazioni e le aggiunge al QStackedWidget.
 
-        self.start_stop_button = AnimatedButton(
-            text="Start",
-            command=self.start_stop_capture,
-            font=font_button(),
-            fg_color=COLOR_NEUTRAL,  # grigio per stato disabilitato
-            hover_color=COLOR_NEUTRAL_HOVER,
-            enabled=False,
-            corner_radius=10,
-            height=45,
-        )
-        row.addWidget(self.start_stop_button, 1)
+        L'ordine deve combaciare con le voci di nav in _build_settings_column:
+        Visualizzazione, Forma, Colore, Audio, Effetti.
+        """
+        self._setting_groups = []  # QGroupBox da nascondere se tutti i controlli sono nascosti
+        self.settings_stack.addWidget(self._build_visualization_page())
+        self.settings_stack.addWidget(self._build_shape_page())
+        self.settings_stack.addWidget(self._build_color_page())
+        self.settings_stack.addWidget(self._build_audio_page())
+        self.settings_stack.addWidget(self._build_effects_page())
 
-        self.fullscreen_btn = AnimatedButton(
-            text="Fullscreen",
-            command=self.fullscreen_command,
-            icon=QIcon(str(self.resource_manager.get_image_path('maximize.png', 'icons'))),
-            icon_size=20,
-            font=font_button(),
-            fg_color=COLOR_FULLSCREEN,
-            hover_color=COLOR_FULLSCREEN_HOVER,
-            corner_radius=10,
-            height=45,
-        )
-        row.addWidget(self.fullscreen_btn, 1)
-
-        help_button = AnimatedButton(
-            text="Help",
-            command=self.open_help_window,
-            icon=QIcon(str(self.resource_manager.get_image_path('help.png', 'icons'))),
-            icon_size=20,
-            font=font_button(),
-            fg_color=COLOR_NEUTRAL,
-            hover_color=COLOR_NEUTRAL_HOVER,
-            corner_radius=10,
-            height=45,
-        )
-        row.addWidget(help_button, 1)
-        return container
-
-    def _build_settings_tabs(self, parent_layout: QVBoxLayout):
-        self.tabview = QTabWidget()
-        self.tabview.addTab(self._build_visualization_tab(), "🎨 Visualizzazione")
-        self.tabview.addTab(self._build_audio_tab(), "🎵 Audio")
-        self.tabview.addTab(self._build_advanced_tab(), "⚙️ Avanzate")
-        self.tabview.addTab(self._build_shape_tab(), "🎛️ Forma")
-        self.tabview.addTab(self._build_effects_tab(), "✨ Effetti")
-        parent_layout.addWidget(self.tabview, 1)
-
-        # Visibilità condizionale iniziale dei controlli di forma/effetti (modalità Barre).
+        # Visibilità condizionale iniziale: tutte le pagine esistono già, quindi le
+        # callback possono toccare widget di pagine diverse senza errori.
+        self.on_color_mode_changed("Classico")
         self.on_viz_mode_changed("Barre")
 
-    def _build_visualization_tab(self) -> QWidget:
-        tab = QWidget()
-        v = QVBoxLayout(tab)
+    def _page(self, *groups) -> QWidget:
+        """Pagina scrollabile: gruppi impilati dentro una QScrollArea (no clipping)."""
+        content = QWidget()
+        v = QVBoxLayout(content)
+        v.setContentsMargins(SPACE_SM, SPACE_SM, SPACE_SM, SPACE_SM)
+        v.setSpacing(SPACE_MD)
+        for group in groups:
+            v.addWidget(group)
+        v.addStretch(1)
 
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll.setWidget(content)
+        return scroll
+
+    def _group(self, title: str, *widgets) -> QGroupBox:
+        """Sezione titolata che raccoglie alcuni frame-controllo."""
+        box = QGroupBox(title)
+        box.setFont(font_section())
+        v = QVBoxLayout(box)
+        v.setContentsMargins(SPACE_SM, SPACE_SM, SPACE_SM, SPACE_SM)
+        v.setSpacing(SPACE_SM)
+        for w in widgets:
+            v.addWidget(w)
+        box._controls = list(widgets)
+        self._setting_groups.append(box)
+        return box
+
+    def _refresh_group_visibility(self):
+        """Nasconde i gruppi i cui controlli sono tutti nascosti (niente box vuoti)."""
+        for box in getattr(self, "_setting_groups", []):
+            box.setVisible(any(w.isVisibleTo(box) for w in box._controls))
+
+    def _build_visualization_page(self) -> QWidget:
         self.viz_mode_option = OptionMenuCustomFrame(
             header_name='Modalità:',
             values=["Barre", "Radiale", "Oscilloscopio", "Linea/Area"],
             initial_value="Barre",
             command=self.on_viz_mode_changed,
         )
-        v.addWidget(self.viz_mode_option)
-
-        self.appearance_mode = OptionMenuCustomFrame(
-            header_name='Tema:',
-            values=["Light", "Dark", "System"],
-            initial_value="System",
-            command=self.change_appearance_mode_event,
-        )
-        v.addWidget(self.appearance_mode)
-
         self.file_picker = BackgroundFilepickerFrame(
             header_name='Sfondo (immagine o video):',
             placeholder_text='Percorso file...',
             apply_command=self.apply_bg_command,
         )
-        v.addWidget(self.file_picker)
-
         self.alpha_slider = SliderCustomFrame(
             header_name='Trasparenza sfondo:',
             command=self.update_alpha,
             initial_value=self.bg_alpha,
         )
-        v.addWidget(self.alpha_slider)
-
         self.bars_alpha_slider = SliderCustomFrame(
             header_name='Opacità barre:',
             command=self.update_bars_alpha,
             initial_value=self.bars_alpha,
         )
-        v.addWidget(self.bars_alpha_slider)
 
+        resa_widgets = [self.bars_alpha_slider]
         if len(self.available_monitors) > 1:
             self.monitor_option = OptionMenuCustomFrame(
                 header_name='Monitor Fullscreen:',
@@ -290,21 +334,19 @@ class AudioCaptureGUI(QMainWindow):
                 initial_value=self.available_monitors[0],
                 command=self.change_selected_monitor,
             )
-            v.addWidget(self.monitor_option)
+            resa_widgets.append(self.monitor_option)
 
-        v.addStretch(1)
-        return tab
+        return self._page(
+            self._group("Modalità", self.viz_mode_option),
+            self._group("Sfondo", self.file_picker, self.alpha_slider),
+            self._group("Resa", *resa_widgets),
+        )
 
-    def _build_audio_tab(self) -> QWidget:
-        tab = QWidget()
-        v = QVBoxLayout(tab)
-
+    def _build_audio_page(self) -> QWidget:
         self.noise_slider = SliderCustomFrame(
             header_name='Soglia Rumore:',
             command=self.update_noise_threshold,
         )
-        v.addWidget(self.noise_slider)
-
         self.frequency_slider = SliderCustomFrame(
             header_name='Bande di Frequenza:',
             command=self.update_frequency_bands,
@@ -316,15 +358,12 @@ class AudioCaptureGUI(QMainWindow):
             warning_text='Numero elevato di bande!\nConsidera la modalità fullscreen',
             value_type=SliderCustomFrame.ValueType.INT,
         )
-        v.addWidget(self.frequency_slider)
+        return self._page(
+            self._group("Sorgente audio", self.noise_slider, self.frequency_slider),
+            self._build_advanced_group(),
+        )
 
-        v.addStretch(1)
-        return tab
-
-    def _build_advanced_tab(self) -> QWidget:
-        tab = QWidget()
-        v = QVBoxLayout(tab)
-
+    def _build_advanced_group(self) -> QGroupBox:
         # Pavimento dB: sotto questo livello la barra è a 0 (più basso = più sensibile)
         self.adv_db_floor_slider = SliderCustomFrame(
             header_name='Pavimento dB:',
@@ -333,8 +372,6 @@ class AudioCaptureGUI(QMainWindow):
             initial_value=int(DB_FLOOR),
             value_type=SliderCustomFrame.ValueType.INT,
         )
-        v.addWidget(self.adv_db_floor_slider)
-
         # Tetto dB: fondo scala, barra piena (più basso = riempie prima)
         self.adv_db_ceiling_slider = SliderCustomFrame(
             header_name='Tetto dB:',
@@ -343,8 +380,6 @@ class AudioCaptureGUI(QMainWindow):
             initial_value=int(DB_CEILING),
             value_type=SliderCustomFrame.ValueType.INT,
         )
-        v.addWidget(self.adv_db_ceiling_slider)
-
         # Attacco (ms): velocità di salita delle barre
         self.adv_attack_slider = SliderCustomFrame(
             header_name='Attacco (ms):',
@@ -353,8 +388,6 @@ class AudioCaptureGUI(QMainWindow):
             initial_value=int(ATTACK_TAU * 1000),
             value_type=SliderCustomFrame.ValueType.INT,
         )
-        v.addWidget(self.adv_attack_slider)
-
         # Rilascio (ms): velocità di discesa delle barre
         self.adv_release_slider = SliderCustomFrame(
             header_name='Rilascio (ms):',
@@ -363,8 +396,6 @@ class AudioCaptureGUI(QMainWindow):
             initial_value=int(RELEASE_TAU * 1000),
             value_type=SliderCustomFrame.ValueType.INT,
         )
-        v.addWidget(self.adv_release_slider)
-
         # Tilt spettrale (dB/ottava): enfatizza bassi (<0) o alti (>0)
         self.adv_tilt_slider = SliderCustomFrame(
             header_name='Tilt (dB/ottava):',
@@ -373,97 +404,79 @@ class AudioCaptureGUI(QMainWindow):
             initial_value=TILT_DB_PER_OCT,
             value_type=SliderCustomFrame.ValueType.DOUBLE,
         )
-        v.addWidget(self.adv_tilt_slider)
+        return self._group(
+            "Avanzate (DSP)",
+            self.adv_db_floor_slider, self.adv_db_ceiling_slider,
+            self.adv_attack_slider, self.adv_release_slider, self.adv_tilt_slider,
+        )
 
-        v.addStretch(1)
-        return tab
-
-    def _build_shape_tab(self) -> QWidget:
-        tab = QWidget()
-        v = QVBoxLayout(tab)
-
-        v.addWidget(self._make_label("Colore", font_label()))
-
+    def _build_color_page(self) -> QWidget:
         self.bars_mode_option = OptionMenuCustomFrame(
             header_name='Modalità colore:',
             values=["Classico", "Tinta unica", "Gradiente", "Spettro"],
             initial_value="Classico",
             command=self.on_color_mode_changed,
         )
-        v.addWidget(self.bars_mode_option)
-
         # Classico: due soglie regolabili
         self.bars_yellow_thr = SliderCustomFrame(
             header_name='Soglia giallo:',
             command=self.update_green_split,
             initial_value=self.bars_green_split,
         )
-        v.addWidget(self.bars_yellow_thr)
-
         self.bars_red_thr = SliderCustomFrame(
             header_name='Soglia rosso:',
             command=self.update_yellow_split,
             initial_value=self.bars_yellow_split,
         )
-        v.addWidget(self.bars_red_thr)
-
         # Tinta unica: un colore
         self.bars_solid_color = ColorPickerFrame(
             header_name='Colore barre:',
             initial_color='#22d36a',
             command=self.update_color_a,
         )
-        v.addWidget(self.bars_solid_color)
-
         # Gradiente: due colori
         self.bars_grad_base = ColorPickerFrame(
             header_name='Colore base:',
             initial_color='#3b6bff',
             command=self.update_color_a,
         )
-        v.addWidget(self.bars_grad_base)
-
         self.bars_grad_top = ColorPickerFrame(
             header_name='Colore cima:',
             initial_color='#ff3bd0',
             command=self.update_color_b,
         )
-        v.addWidget(self.bars_grad_top)
+        return self._page(
+            self._group("Modalità colore", self.bars_mode_option),
+            self._group("Classico", self.bars_yellow_thr, self.bars_red_thr),
+            self._group("Tinta unica", self.bars_solid_color),
+            self._group("Gradiente", self.bars_grad_base, self.bars_grad_top),
+        )
 
-        v.addWidget(self._make_label("Forma", font_label()))
-
+    def _build_shape_page(self) -> QWidget:
         self.bars_width_slider = SliderCustomFrame(
             header_name='Larghezza barre:',
             command=self.update_bar_width,
             from_=0.1, to=1.0,
             initial_value=self.bars_width,
         )
-        v.addWidget(self.bars_width_slider)
-
         self.bars_rounded_option = OptionMenuCustomFrame(
             header_name='Cime arrotondate:',
             values=["No", "Sì"],
             initial_value="No",
             command=self.update_rounded,
         )
-        v.addWidget(self.bars_rounded_option)
-
         self.bars_anchor_option = OptionMenuCustomFrame(
             header_name='Ancoraggio:',
             values=["Dal basso", "Centro"],
             initial_value="Dal basso",
             command=self.update_anchor,
         )
-        v.addWidget(self.bars_anchor_option)
-
         self.bars_order_option = OptionMenuCustomFrame(
             header_name='Ordine bande:',
             values=["Standard", "Simmetrico"],
             initial_value="Standard",
             command=self.update_band_order,
         )
-        v.addWidget(self.bars_order_option)
-
         # Radiale
         self.viz_inner_radius_slider = SliderCustomFrame(
             header_name='Raggio foro:',
@@ -471,8 +484,6 @@ class AudioCaptureGUI(QMainWindow):
             from_=0.0, to=0.8,
             initial_value=self.viz_inner_radius,
         )
-        v.addWidget(self.viz_inner_radius_slider)
-
         # Oscilloscopio / Linea-Area
         self.viz_thickness_slider = SliderCustomFrame(
             header_name='Spessore linea:',
@@ -480,87 +491,82 @@ class AudioCaptureGUI(QMainWindow):
             from_=0.002, to=0.06,
             initial_value=self.viz_line_thickness,
         )
-        v.addWidget(self.viz_thickness_slider)
-
         # Linea/Area
         self.viz_fill_option = OptionMenuCustomFrame(
             header_name='Riempimento:', values=["Linea", "Area"], initial_value="Area",
             command=self.update_fill)
-        v.addWidget(self.viz_fill_option)
-
         # Oscilloscopio
         self.viz_osc_mirror_option = OptionMenuCustomFrame(
             header_name='Specchiato:', values=["No", "Sì"], initial_value="No",
             command=self.update_osc_mirror)
-        v.addWidget(self.viz_osc_mirror_option)
-
         self.viz_osc_smooth_slider = SliderCustomFrame(
             header_name='Fluidità (oscill.):',
             command=self.update_osc_smoothing,
             from_=0.0, to=1.0,
             initial_value=self.viz_osc_smoothing,
         )
-        v.addWidget(self.viz_osc_smooth_slider)
+        return self._page(
+            self._group(
+                "Forma barre",
+                self.bars_width_slider, self.bars_rounded_option,
+                self.bars_anchor_option, self.bars_order_option,
+            ),
+            self._group("Radiale", self.viz_inner_radius_slider),
+            self._group(
+                "Linea / Oscilloscopio",
+                self.viz_thickness_slider, self.viz_fill_option,
+                self.viz_osc_mirror_option, self.viz_osc_smooth_slider,
+            ),
+        )
 
-        v.addStretch(1)
-
-        # Imposta la visibilità condizionale iniziale (modalità = Classico)
-        self.on_color_mode_changed("Classico")
-        return tab
-
-    def _build_effects_tab(self) -> QWidget:
-        tab = QWidget()
-        v = QVBoxLayout(tab)
-
-        self.fx_peakcap_label = self._make_label("Peak-cap", font_label())
-        v.addWidget(self.fx_peakcap_label)
+    def _build_effects_page(self) -> QWidget:
+        # Peak-cap (solo modalità Barre: il gruppo viene nascosto altrove)
         self.fx_peakcap_option = OptionMenuCustomFrame(
             header_name='Peak-cap:', values=["Off", "On"], initial_value="Off",
             command=self.update_peakcap_enabled)
-        v.addWidget(self.fx_peakcap_option)
         self.fx_peakcap_color_picker = ColorPickerFrame(
             header_name='Colore cap:', initial_color='#ffffff', command=self.update_peakcap_color)
-        v.addWidget(self.fx_peakcap_color_picker)
         self.fx_peakcap_hold_slider = SliderCustomFrame(
             header_name='Hold (ms):', command=self.update_peakcap_hold,
             from_=0, to=2000, initial_value=int(self.fx_peakcap_hold * 1000),
             value_type=SliderCustomFrame.ValueType.INT)
-        v.addWidget(self.fx_peakcap_hold_slider)
         self.fx_peakcap_fall_slider = SliderCustomFrame(
             header_name='Caduta (/s):', command=self.update_peakcap_fall,
             from_=0.1, to=3.0, initial_value=self.fx_peakcap_fall,
             value_type=SliderCustomFrame.ValueType.DOUBLE)
-        v.addWidget(self.fx_peakcap_fall_slider)
 
-        v.addWidget(self._make_label("Glow (bloom)", font_label()))
         self.fx_bloom_option = OptionMenuCustomFrame(
             header_name='Glow:', values=["Off", "On"], initial_value="Off",
             command=self.update_bloom_enabled)
-        v.addWidget(self.fx_bloom_option)
         self.fx_bloom_slider = SliderCustomFrame(
             header_name='Intensità:', command=self.update_bloom_intensity,
             from_=0.0, to=3.0, initial_value=self.fx_bloom_intensity,
             value_type=SliderCustomFrame.ValueType.DOUBLE)
-        v.addWidget(self.fx_bloom_slider)
 
-        v.addWidget(self._make_label("Beat pulse", font_label()))
         self.fx_beat_option = OptionMenuCustomFrame(
             header_name='Beat pulse:', values=["Off", "On"], initial_value="Off",
             command=self.update_beat_enabled)
-        v.addWidget(self.fx_beat_option)
         self.fx_beat_intensity_slider = SliderCustomFrame(
             header_name='Intensità zoom:', command=self.update_beat_intensity,
             from_=0.0, to=0.3, initial_value=self.fx_beat_intensity,
             value_type=SliderCustomFrame.ValueType.DOUBLE)
-        v.addWidget(self.fx_beat_intensity_slider)
         self.fx_beat_sens_slider = SliderCustomFrame(
             header_name='Sensibilità:', command=self.update_beat_sensitivity,
             from_=1.05, to=3.0, initial_value=self.fx_beat_sensitivity,
             value_type=SliderCustomFrame.ValueType.DOUBLE)
-        v.addWidget(self.fx_beat_sens_slider)
 
-        v.addStretch(1)
-        return tab
+        return self._page(
+            self._group(
+                "Peak-cap",
+                self.fx_peakcap_option, self.fx_peakcap_color_picker,
+                self.fx_peakcap_hold_slider, self.fx_peakcap_fall_slider,
+            ),
+            self._group("Glow (bloom)", self.fx_bloom_option, self.fx_bloom_slider),
+            self._group(
+                "Beat pulse",
+                self.fx_beat_option, self.fx_beat_intensity_slider, self.fx_beat_sens_slider,
+            ),
+        )
 
     # --- Device --------------------------------------------------------------
     async def get_devices(self):
@@ -587,16 +593,11 @@ class AudioCaptureGUI(QMainWindow):
         return monitors_name
 
     def on_device_selected(self, item):
-        """Quando un device è selezionato, abilita il pulsante start/stop."""
+        """Alla selezione di un dispositivo avvia la cattura e abilita l'avvio del fullscreen."""
         row = self.device_listbox.row(item)
         if row < 0:
             return
         device = self.devices[row]
-
-        # Se stiamo già catturando, ferma prima
-        if self.is_capturing:
-            self.stop_capture()
-            self.is_capturing = False
 
         if self.last_device_selected != device:
             self.audio_queue = None
@@ -607,10 +608,10 @@ class AudioCaptureGUI(QMainWindow):
             self.audio_thread.start()
             self.last_device_selected = device
 
-            # Abilita il pulsante e imposta il colore verde
-            self.start_stop_button.setEnabled(True)
-            self.start_stop_button.update_base_colors(fg_color=COLOR_START, hover_color=COLOR_START_HOVER)
-            self.start_stop_button.setText("Start")
+            # Abilita l'avvio del fullscreen (verde), se non è già in esecuzione
+            self.fullscreen_btn.setEnabled(True)
+            if not self.equalizer_opengl_thread:
+                self.fullscreen_btn.update_base_colors(fg_color=COLOR_START, hover_color=COLOR_START_HOVER)
 
     def stop_audio_thread(self):
         if self.audio_thread:
@@ -622,8 +623,7 @@ class AudioCaptureGUI(QMainWindow):
     def apply_bg_command(self):
         """
         Applica lo sfondo selezionato (immagine o video). Discrimina per
-        estensione: i video sono gestiti SOLO dal renderer OpenGL (fullscreen);
-        l'anteprima in-window mostra un segnaposto testuale.
+        estensione: lo sfondo configura il renderer OpenGL (fullscreen).
         """
         filename = self.file_picker.get_filename()
         if not filename:
@@ -637,11 +637,10 @@ class AudioCaptureGUI(QMainWindow):
             self._apply_image_background(filename)
 
     def _apply_image_background(self, filename: str):
-        """Carica un'immagine come sfondo: aggiorna l'anteprima e il renderer OpenGL."""
+        """Carica un'immagine come sfondo del renderer OpenGL."""
         try:
             self.bg_video_path = None  # torna alla modalità immagine
             self.bg_img = Image.open(filename)
-            self.equalizer_preview.set_background_image(filename)
             self.update_bg_opengl(self.bg_img)
         except FileNotFoundError:
             QMessageBox.critical(self, 'Errore', 'File non trovato!')
@@ -649,24 +648,20 @@ class AudioCaptureGUI(QMainWindow):
             QMessageBox.critical(self, 'Errore', f"Errore nel caricamento dell'immagine: {e}")
 
     def _apply_video_background(self, filename: str):
-        """
-        Seleziona un video come sfondo (feature solo-OpenGL). L'anteprima mostra
-        un segnaposto; se il fullscreen è già aperto il video parte subito.
-        """
+        """Seleziona un video come sfondo: se il fullscreen è aperto parte subito."""
         if not os.path.isfile(filename):
             QMessageBox.critical(self, 'Errore', 'File non trovato!')
             return
         self.bg_video_path = filename
-        self.equalizer_preview.show_video_placeholder()
         self.update_video_opengl(filename)
 
-    # --- Messaggi di controllo verso i renderer ------------------------------
+    # --- Messaggi di controllo verso il renderer -----------------------------
     def update_noise_threshold(self, value):
-        if self.preview_worker or self.equalizer_opengl_thread:
+        if self.equalizer_opengl_thread:
             self.equalizer_control_queue.put({"type": "set_noise_threshold", "value": float(value)})
 
     def update_frequency_bands(self, value):
-        if self.preview_worker or self.equalizer_opengl_thread:
+        if self.equalizer_opengl_thread:
             self.equalizer_control_queue.put({"type": "set_frequency_bands", "value": int(value)})
 
     def update_alpha_opengl(self, value):
@@ -690,6 +685,7 @@ class AudioCaptureGUI(QMainWindow):
         self.bars_solid_color.setVisible(tinta)
         self.bars_grad_base.setVisible(grad)
         self.bars_grad_top.setVisible(grad)
+        self._refresh_group_visibility()
         self.bars_color_mode = _COLOR_MODE_TO_INT.get(label, 0)
         if self.equalizer_opengl_thread:
             self.equalizer_control_queue.put({"type": "set_color_mode", "value": self.bars_color_mode})
@@ -700,7 +696,7 @@ class AudioCaptureGUI(QMainWindow):
         radial = label == "Radiale"
         osc = label == "Oscilloscopio"
         line = label == "Linea/Area"
-        # Forma (tab "🎛️ Forma")
+        # Forma (pagina "Forma")
         self.bars_width_slider.setVisible(bars or radial)
         self.bars_rounded_option.setVisible(bars)
         self.bars_anchor_option.setVisible(bars)
@@ -710,12 +706,12 @@ class AudioCaptureGUI(QMainWindow):
         self.viz_fill_option.setVisible(line)
         self.viz_osc_mirror_option.setVisible(osc)
         self.viz_osc_smooth_slider.setVisible(osc)
-        # Peak-cap: solo in modalità Barre (tab "✨ Effetti")
-        self.fx_peakcap_label.setVisible(bars)
+        # Peak-cap: solo in modalità Barre (pagina "Effetti")
         self.fx_peakcap_option.setVisible(bars)
         self.fx_peakcap_color_picker.setVisible(bars)
         self.fx_peakcap_hold_slider.setVisible(bars)
         self.fx_peakcap_fall_slider.setVisible(bars)
+        self._refresh_group_visibility()
         self.viz_mode = _VIZ_MODE_TO_INT.get(label, 0)
         if self.equalizer_opengl_thread:
             self.equalizer_control_queue.put({"type": "set_viz_mode", "value": self.viz_mode})
@@ -862,97 +858,32 @@ class AudioCaptureGUI(QMainWindow):
 
     def update_alpha(self, value):
         self.bg_alpha = value
-        # In modalità video l'anteprima mostra il segnaposto, non l'immagine.
-        # L'alpha vale comunque per il video, inoltrato al renderer OpenGL.
-        if self.bg_video_path is None:
-            self.equalizer_preview.set_background_alpha(value)
         self.update_alpha_opengl(value)
 
     # --- Tema / monitor ------------------------------------------------------
     def change_appearance_mode_event(self, new_appearance_mode: str):
-        """Cambia il tema dell'applicazione tramite qdarktheme."""
-        qdarktheme.setup_theme(_THEME_MODE.get(new_appearance_mode, "auto"))
+        """Cambia il tema dell'applicazione tramite qdarktheme.
+
+        Ri-passa accento di brand + QSS: setup_theme rigenera l'intero stylesheet,
+        quindi senza theme_kwargs() lo strato personalizzato andrebbe perso.
+        """
+        qdarktheme.setup_theme(_THEME_MODE.get(new_appearance_mode, "auto"), **theme_kwargs())
 
     def change_selected_monitor(self, selected_monitor_name: str) -> None:
         self.selected_monitor = selected_monitor_name
 
-    # --- Cattura / anteprima -------------------------------------------------
-    def start_capture(self):
-        """Avvia il worker DSP dell'anteprima quando si preme Start."""
-        if self.preview_worker is not None:
-            return
-        if not (self.audio_thread and self.audio_thread.is_alive()):
-            self.show_no_audio_thread_warning()
-            return
-        try:
-            self.preview_worker = EqualizerPreviewWorker(
-                self.audio_queue,
-                self.equalizer_control_queue,
-                noise_threshold=self.noise_slider.get_value(),
-                n_bands=int(self.frequency_slider.get_value()),
-            )
-            self.preview_thread = QThread()
-            self.preview_worker.moveToThread(self.preview_thread)
-            self.preview_thread.started.connect(self.preview_worker.run)
-            self.preview_worker.bands_ready.connect(self.equalizer_preview.on_bands)
-            self.preview_thread.start()
-        except Exception:
-            self.preview_worker = None
-            self.preview_thread = None
-
-    def stop_capture(self):
-        """Ferma il worker DSP dell'anteprima e attende la fine del thread."""
-        if self.preview_worker is not None:
-            self.preview_worker.stop()
-        if self.preview_thread is not None:
-            self.preview_thread.quit()
-            self.preview_thread.wait()
-        self.preview_worker = None
-        self.preview_thread = None
-        self.equalizer_preview.clear_bars()
-
-    def start_stop_capture(self):
-        """Avvia o ferma la cattura audio."""
-        if not self.audio_thread or not self.audio_thread.is_alive():
-            self.show_no_audio_thread_warning()
-            return
-        if not self.audio_queue:
-            return
-
-        if not self.is_capturing:
-            # Svuota la coda prima di iniziare
-            while not self.audio_queue.empty():
-                try:
-                    self.audio_queue.get_nowait()
-                except queue.Empty:
-                    break
-            self.start_capture()
-            QTimer.singleShot(100, self._check_capture_started)
-        else:
-            self.stop_capture()
-            self.is_capturing = False
-            self.start_stop_button.update_base_colors(fg_color=COLOR_START, hover_color=COLOR_START_HOVER)
-            self.start_stop_button.setText("Start")
-
-    def _check_capture_started(self):
-        """Verifica che la cattura sia partita e aggiorna l'UI."""
-        if self.preview_thread is not None and self.preview_thread.isRunning():
-            self.is_capturing = True
-            self.start_stop_button.update_base_colors(fg_color=COLOR_STOP, hover_color=COLOR_STOP_HOVER)
-            self.start_stop_button.setText("Stop")
-        else:
-            self.is_capturing = False
-
     # --- Fullscreen OpenGL ---------------------------------------------------
-    def fullscreen_command(self):
-        """Apre (o chiude) la visualizzazione fullscreen OpenGL."""
-        # Se stiamo catturando in anteprima, ferma prima.
-        if self.is_capturing:
-            self.stop_capture()
-            self.is_capturing = False
-            self.start_stop_button.update_base_colors(fg_color=COLOR_START, hover_color=COLOR_START_HOVER)
-            self.start_stop_button.setText("Start")
+    def _set_fullscreen_button_running(self, running: bool):
+        """Riflette lo stato del fullscreen sul pulsante (Ferma/rosso vs Avvia/verde)."""
+        if running:
+            self.fullscreen_btn.update_base_colors(fg_color=COLOR_STOP, hover_color=COLOR_STOP_HOVER)
+            self.fullscreen_btn.setText("Ferma")
+        else:
+            self.fullscreen_btn.update_base_colors(fg_color=COLOR_START, hover_color=COLOR_START_HOVER)
+            self.fullscreen_btn.setText("Avvia a schermo intero")
 
+    def fullscreen_command(self):
+        """Avvia o ferma la visualizzazione fullscreen OpenGL."""
         if not self.audio_thread:
             self.show_no_audio_thread_warning()
             return
@@ -962,6 +893,7 @@ class AudioCaptureGUI(QMainWindow):
             while self.equalizer_opengl_thread.is_alive():
                 self.equalizer_opengl_thread.join(timeout=0.1)
             self.equalizer_opengl_thread = None
+            self._set_fullscreen_button_running(False)
         else:
             self.equalizer_opengl_thread = EqualizerOpenGLThread(
                 self.audio_queue,
@@ -1005,6 +937,7 @@ class AudioCaptureGUI(QMainWindow):
                 window_close_callback=self.opengl_window_closed,
             )
             self.equalizer_opengl_thread.start()
+            self._set_fullscreen_button_running(True)
 
     def opengl_window_closed(self):
         # Chiamato sul thread GLFW: marshalla sul thread GUI via segnale.
@@ -1012,6 +945,7 @@ class AudioCaptureGUI(QMainWindow):
 
     def _on_opengl_closed(self):
         self.equalizer_opengl_thread = None
+        self._set_fullscreen_button_running(False)
 
     # --- Help / avvisi -------------------------------------------------------
     def open_help_window(self):
@@ -1029,8 +963,6 @@ class AudioCaptureGUI(QMainWindow):
         """
         Alla chiusura della finestra ferma con grazia tutti i thread avviati.
         """
-        self.stop_capture()
-
         if self.audio_thread:
             self.audio_thread.stop()
             while self.audio_thread.is_alive():
