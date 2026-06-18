@@ -74,6 +74,56 @@ def test_resolve_bg_ref_ok_and_fallback():
     assert ok is False and path.endswith(profiles.DEFAULT_BG_NAME)
 
 
+def _fresh_store():
+    tmp = tempfile.mkdtemp(prefix="swprof_")
+    return profiles.ProfileStore(config_dir=tmp), tmp
+
+
+def test_store_save_list_load_delete():
+    store, _ = _fresh_store()
+    assert store.list_names() == []
+    s = dict(profiles.DEFAULTS); s["n_bands"] = 33
+    store.save("Il mio preset", s)
+    assert store.list_names() == ["Il mio preset"]
+    loaded = store.load("Il mio preset")
+    assert loaded["n_bands"] == 33
+    store.delete("Il mio preset")
+    assert store.list_names() == []
+
+
+def test_store_last_profile():
+    store, _ = _fresh_store()
+    assert store.get_last() is None
+    store.set_last("preset-x")
+    assert store.get_last() == "preset-x"
+
+
+def test_store_export_import_roundtrip_and_collision():
+    store, _ = _fresh_store()
+    s = dict(profiles.DEFAULTS); s["bars_alpha"] = 0.42
+    store.save("alfa", s)
+    dest = Path(tempfile.mkdtemp(prefix="swexp_")) / "alfa.json"
+    store.export("alfa", dest)
+    assert dest.is_file()
+
+    # importare due volte lo stesso file dà nomi distinti (anti-collisione)
+    n1 = store.import_file(dest)
+    n2 = store.import_file(dest)
+    assert n1 != n2, (n1, n2)
+    assert store.load(n1)["bars_alpha"] == 0.42
+
+
+def test_store_import_invalid_raises():
+    store, tmp = _fresh_store()
+    bad = Path(tmp) / "bad.json"
+    bad.write_text("non è json", encoding="utf-8")
+    try:
+        store.import_file(bad)
+    except (ValueError, json.JSONDecodeError):
+        return
+    raise AssertionError("import_file doveva fallire su JSON non valido")
+
+
 def main():
     test_serialize_roundtrip_preserves_values()
     test_deserialize_fills_missing_and_ignores_unknown()
@@ -81,6 +131,10 @@ def main():
     test_sanitize_name()
     test_encode_bg_ref_resource_vs_path()
     test_resolve_bg_ref_ok_and_fallback()
+    test_store_save_list_load_delete()
+    test_store_last_profile()
+    test_store_export_import_roundtrip_and_collision()
+    test_store_import_invalid_raises()
     print("OK")
 
 

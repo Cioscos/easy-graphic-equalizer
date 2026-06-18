@@ -129,3 +129,77 @@ def resolve_bg_ref(ref: dict, rm: ResourceManager) -> Tuple[str, bool]:
             return value, True
         return default, False
     return default, False
+
+
+def _default_config_dir() -> Path:
+    """Cartella di config per-utente, cross-platform, senza dipendenze esterne."""
+    if sys.platform == "win32":
+        base = os.environ.get("APPDATA") or os.path.expanduser("~")
+    elif sys.platform == "darwin":
+        base = os.path.expanduser("~/Library/Application Support")
+    else:
+        base = os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config")
+    return Path(base) / "sound-wave"
+
+
+class ProfileStore:
+    """Gestisce i profili su disco: un file JSON per profilo + un puntatore last_profile.
+
+    L'identità di un profilo è il nome-file sanitizzato (sanitize_name); il nome
+    mostrato nella combo coincide con esso.
+    """
+
+    def __init__(self, config_dir: Optional[Path] = None):
+        self.config_dir = Path(config_dir) if config_dir else _default_config_dir()
+        self.profiles_dir = self.config_dir / "profiles"
+        self.profiles_dir.mkdir(parents=True, exist_ok=True)
+        self._settings_file = self.config_dir / "settings.json"
+
+    def _path_for(self, name: str) -> Path:
+        return self.profiles_dir / f"{sanitize_name(name)}.json"
+
+    def list_names(self) -> List[str]:
+        return sorted(p.stem for p in self.profiles_dir.glob("*.json"))
+
+    def load(self, name: str) -> dict:
+        raw = json.loads(self._path_for(name).read_text(encoding="utf-8"))
+        return deserialize(raw.get("settings", {}))
+
+    def save(self, name: str, settings: dict) -> None:
+        self.write_envelope(settings, self._path_for(name))
+
+    def delete(self, name: str) -> None:
+        self._path_for(name).unlink(missing_ok=True)
+
+    def export(self, name: str, dest_path) -> None:
+        shutil.copyfile(self._path_for(name), dest_path)
+
+    def write_envelope(self, settings: dict, dest_path) -> None:
+        envelope = {"app": APP_TAG, "version": CURRENT_VERSION, "settings": serialize(settings)}
+        Path(dest_path).write_text(
+            json.dumps(envelope, indent=2, ensure_ascii=False), encoding="utf-8"
+        )
+
+    def import_file(self, src_path) -> str:
+        raw = json.loads(Path(src_path).read_text(encoding="utf-8"))
+        settings = deserialize(raw.get("settings", {}))
+        base = sanitize_name(Path(src_path).stem)
+        existing = set(self.list_names())
+        name, i = base, 2
+        while name in existing:
+            name = f"{base}-{i}"
+            i += 1
+        self.save(name, settings)
+        return name
+
+    def get_last(self) -> Optional[str]:
+        try:
+            data = json.loads(self._settings_file.read_text(encoding="utf-8"))
+            return data.get("last_profile")
+        except (json.JSONDecodeError, OSError):
+            return None
+
+    def set_last(self, name: str) -> None:
+        self._settings_file.write_text(
+            json.dumps({"last_profile": name}, ensure_ascii=False), encoding="utf-8"
+        )
