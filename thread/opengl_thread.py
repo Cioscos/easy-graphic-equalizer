@@ -1494,10 +1494,23 @@ class EqualizerOpenGLThread(threading.Thread):
             glfw.window_hint(glfw.OPENGL_FORWARD_COMPAT, glfw.TRUE)
             # MSAA: richiedi un framebuffer di default multisample (antialiasing hardware).
             glfw.window_hint(glfw.SAMPLES, MSAA_SAMPLES)
+            # Borderless windowed (NON fullscreen esclusivo): finestra senza bordo/titolo,
+            # dimensionata e posizionata sul monitor scelto. Niente cambio di modalità video
+            # → alt-tab istantaneo e (su Windows) present al refresh del monitor senza il
+            # mode-switch dell'esclusivo. NON FLOATING: come le borderless dei giochi
+            # moderni, l'alt-tab la manda dietro.
+            glfw.window_hint(glfw.DECORATED, glfw.FALSE)
 
-            window = glfw.create_window(self.window_width, self.window_height, "Audio Visualizer", selected_monitor, None)
+            # Posizione del monitor scelto nello spazio virtuale multi-monitor.
+            monitor_x, monitor_y = glfw.get_monitor_pos(selected_monitor)
+
+            # Finestra WINDOWED (monitor=None): è la borderless, non l'esclusiva.
+            window = glfw.create_window(self.window_width, self.window_height, "Audio Visualizer", None, None)
             if not window:
                 raise Exception("GLFW window creation failed")
+
+            # Posizionala esattamente sul monitor scelto così lo copre tutto.
+            glfw.set_window_pos(window, monitor_x, monitor_y)
 
             # check if the stop event is set
             if self.stop_event.is_set():
