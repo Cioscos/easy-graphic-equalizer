@@ -23,7 +23,7 @@ MAX_FREQ = 20000
 
 GENERAL_LOG = False
 FFT_LOGS = False
-PERF_LOGS = False
+PERF_LOGS = True
 
 # --- Taratura fedeltà/latenza (regolabili a vista) ---
 # Scala dB assoluta: l'altezza barra riflette il livello reale del segnale.
@@ -1604,8 +1604,8 @@ class EqualizerOpenGLThread(threading.Thread):
                         noise_threshold=self._noise_threshold,
                         channels=self._channels
                     )
-                    if PERF_LOGS:
-                        print(f"PERF LOG: FFT took {(time.perf_counter() - t0) * 1000:.3f} ms")
+                    if FFT_LOGS:
+                        print(f"FFT LOG: FFT took {(time.perf_counter() - t0) * 1000:.3f} ms")
 
                 # Waveform mono per l'oscilloscopio (solo se serve): media dei canali.
                 waveform = None

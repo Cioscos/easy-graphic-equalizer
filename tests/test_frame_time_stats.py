@@ -18,19 +18,21 @@ def test_no_report_before_window():
     assert stats.add(0.005) is None
 
 
-def test_report_at_window_boundary():
-    stats = FrameTimeStats(report_every=4, budget_s=0.01)
+def test_report_format_median_max_lag():
+    stats = FrameTimeStats(report_every=4, budget_s=0.01)  # soglia lag = 0.015 s
     stats.add(0.005)
     stats.add(0.005)
-    stats.add(0.015)  # oltre budget
+    stats.add(0.020)  # lag spike (> 15 ms)
     report = stats.add(0.005)
     assert report is not None, "il 4° frame deve produrre un report"
-    # avg = (0.005+0.005+0.015+0.005)/4 = 0.0075 s = 7.50 ms
-    assert "avg=7.50ms" in report, report
-    assert "min=5.00ms" in report, report
-    assert "max=15.00ms" in report, report
-    # 1 frame su 4 oltre budget = 25%
-    assert "oltre-budget=25%" in report, report
+    # ordinati [5,5,5,20] ms → mediana = 5.00 ms, max = 20.00 ms, media = 8.75 ms
+    assert "median=5.00ms" in report, report
+    assert "avg=8.75ms" in report, report
+    assert "max=20.00ms" in report, report
+    # soglia lag = budget*1.5 = 15.0 ms; 1 frame oltre
+    assert "lag-spikes(>15.0ms)=1" in report, report
+    # gli fps sono calcolati dalla MEDIANA (robusta agli outlier): 1/0.005 = 200
+    assert "~200fps mediani" in report, report
 
 
 def test_resets_after_report():
@@ -43,7 +45,7 @@ def test_resets_after_report():
 
 def main():
     test_no_report_before_window()
-    test_report_at_window_boundary()
+    test_report_format_median_max_lag()
     test_resets_after_report()
     print("OK")
 
