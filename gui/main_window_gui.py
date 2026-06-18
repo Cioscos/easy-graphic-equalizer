@@ -157,6 +157,9 @@ class AudioCaptureGUI(QMainWindow):
         # Selezione dispositivo (in alto, a tutta larghezza)
         root_layout.addWidget(self._build_device_selector())
 
+        # Barra profili (gestore con nomi): sotto il device selector
+        root_layout.addWidget(self._build_profile_bar())
+
         # Corpo: nav a sinistra | pagina impostazioni a destra
         nav_widget = self._build_nav()
         pages_widget = self._build_pages()
@@ -176,6 +179,12 @@ class AudioCaptureGUI(QMainWindow):
 
         self.nav.setCurrentRow(0)
         self._opengl_closed.connect(self._on_opengl_closed)
+
+        # Auto-load dell'ultimo profilo usato (se ancora presente)
+        last = self._profile_store.get_last()
+        if last and last in self._profile_store.list_names():
+            self.profile_bar.set_profiles(self._profile_store.list_names(), last)
+            self._apply_profile(self._profile_store.load(last))
 
     # --- Costruzione pannelli ------------------------------------------------
     def _build_menu_bar(self):
@@ -238,6 +247,22 @@ class AudioCaptureGUI(QMainWindow):
         self.settings_stack = QStackedWidget()
         self._build_settings_pages()
         return self.settings_stack
+
+    def _build_profile_bar(self) -> QWidget:
+        """Barra profili: selettore + Salva/Salva come…/Elimina/Importa…/Esporta…."""
+        self.profile_bar = ProfileBarFrame(
+            on_select=self._on_profile_selected,
+            on_save=self._on_profile_save,
+            on_save_as=self._on_profile_save_as,
+            on_delete=self._on_profile_delete,
+            on_import=self._on_profile_import,
+            on_export=self._on_profile_export,
+        )
+        self.profile_bar.set_profiles(self._profile_store.list_names(), None)
+        return self.profile_bar
+
+    def _refresh_profile_bar(self, selected=None) -> None:
+        self.profile_bar.set_profiles(self._profile_store.list_names(), selected)
 
     def _build_footer(self) -> QWidget:
         """Azione primaria a tutta larghezza: avvia/ferma il fullscreen OpenGL."""
@@ -1145,6 +1170,76 @@ class AudioCaptureGUI(QMainWindow):
                 self, "Sfondo non trovato",
                 f"Sfondo non trovato: {ref_desc}. Uso lo sfondo predefinito.",
             )
+
+    def _on_profile_selected(self, name) -> None:
+        if not name:
+            return
+        try:
+            settings = self._profile_store.load(name)
+        except Exception as e:
+            QMessageBox.warning(self, "Profilo", f"Impossibile caricare il profilo: {e}")
+            return
+        self._apply_profile(settings)
+        self._profile_store.set_last(name)
+
+    def _on_profile_save(self) -> None:
+        name = self.profile_bar.current_name()
+        if not name:
+            self._on_profile_save_as()
+            return
+        self._profile_store.save(name, self._collect_profile())
+        self._profile_store.set_last(name)
+
+    def _on_profile_save_as(self) -> None:
+        name, accepted = QInputDialog.getText(self, "Salva profilo", "Nome del profilo:")
+        if not accepted or not name.strip():
+            return
+        self._profile_store.save(name, self._collect_profile())
+        saved = profiles.sanitize_name(name)
+        self._refresh_profile_bar(selected=saved)
+        self._profile_store.set_last(saved)
+
+    def _on_profile_delete(self) -> None:
+        name = self.profile_bar.current_name()
+        if not name:
+            return
+        confirm = QMessageBox.question(
+            self, "Elimina profilo", f"Eliminare il profilo «{name}»?"
+        )
+        if confirm != QMessageBox.StandardButton.Yes:
+            return
+        self._profile_store.delete(name)
+        self._refresh_profile_bar()
+
+    def _on_profile_import(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Importa profilo", "", "Profili Sound Wave (*.json);;Tutti i file (*)"
+        )
+        if not path:
+            return
+        try:
+            name = self._profile_store.import_file(path)
+        except Exception as e:
+            QMessageBox.warning(self, "Importa profilo", f"File non valido: {e}")
+            return
+        self._refresh_profile_bar(selected=name)
+        self._apply_profile(self._profile_store.load(name))
+        self._profile_store.set_last(name)
+
+    def _on_profile_export(self) -> None:
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Esporta profilo", "profilo.json", "Profili Sound Wave (*.json)"
+        )
+        if not path:
+            return
+        name = self.profile_bar.current_name()
+        try:
+            if name:
+                self._profile_store.export(name, path)
+            else:
+                self._profile_store.write_envelope(self._collect_profile(), path)
+        except Exception as e:
+            QMessageBox.warning(self, "Esporta profilo", f"Impossibile esportare: {e}")
 
     # --- Ciclo di vita -------------------------------------------------------
     def closeEvent(self, event):
