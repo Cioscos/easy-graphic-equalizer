@@ -1,3 +1,4 @@
+import sys
 from pathlib import Path
 
 
@@ -6,7 +7,12 @@ class ResourceManager:
     Utility class to get acces to the resources in the application
     """
     def __init__(self) -> None:
-        self.base_path = Path(__file__).parent / "resources"
+        # In un bundle PyInstaller le risorse vivono sotto sys._MEIPASS; in
+        # sviluppo accanto a questo file.
+        if getattr(sys, "frozen", False):
+            self.base_path = Path(sys._MEIPASS) / "resources"
+        else:
+            self.base_path = Path(__file__).parent / "resources"
     
     def get_image_path(self, image_name: str, subfolder: str = "") -> Path:
         """
