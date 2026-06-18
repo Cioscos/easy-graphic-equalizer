@@ -602,6 +602,9 @@ class EqualizerOpenGLThread(threading.Thread):
         self._video_tex_size = None         # (w, h) texture allocata; None = non ancora creata
         self._video_frame_interval = 1.0 / 30.0  # 1/fps (aggiornato dai metadati del video)
         self._video_time_acc = 0.0          # accumulatore di tempo per il pacing del video
+        self._video_pbos = None             # 2 PBO (ping-pong) per upload async; None = non creati
+        self._video_pbo_index = 0           # indice del PBO corrente nel ring
+        self._video_pbo_size = 0            # byte allocati per ciascun PBO; 0 = non allocati
 
         self.window_width = self.window_height = None
         self.frame_rate = None
@@ -1218,6 +1221,10 @@ class EqualizerOpenGLThread(threading.Thread):
         if self._video_texture:
             _safe(lambda: glDeleteTextures(1, [self._video_texture]))
             self._video_texture = None
+        if self._video_pbos:
+            _safe(lambda: glDeleteBuffers(len(self._video_pbos), self._video_pbos))
+            self._video_pbos = None
+            self._video_pbo_size = 0
         for tex in self._bloom_texs:
             _safe(lambda t=tex: glDeleteTextures(1, [t]))
         for fbo in self._bloom_fbos:
@@ -1533,6 +1540,11 @@ class EqualizerOpenGLThread(threading.Thread):
             glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
             glClearColor(0.0, 0.0, 0.0, 1.0)
 
+            # RGB a 3 byte/pixel con larghezza non multipla di 4: forziamo una volta
+            # per tutte l'allineamento di unpack a 1 byte (lo usa l'upload video via
+            # PBO; sicuro anche per le texture RGBA, sempre 4-allineate).
+            glPixelStorei(GL_UNPACK_ALIGNMENT, 1)
+
             # Abilita l'MSAA (no-op se il driver non ha concesso il framebuffer multisample)
             glEnable(GL_MULTISAMPLE)
             if GENERAL_LOG:
@@ -1794,16 +1806,18 @@ class EqualizerOpenGLThread(threading.Thread):
     def _upload_video_frame(self, frame: np.ndarray) -> None:
         """
         Carica un frame video (np.ndarray HxWx3 uint8 RGB, riga 0 in alto) nella
-        texture video. Alloca con glTexImage2D al primo frame o quando cambiano le
-        dimensioni, poi aggiorna in-place con glTexSubImage2D (niente riallocazioni).
-        Il flip verticale è demandato allo shader (uFlipV=1), non copiato in CPU.
+        texture video tramite PBO double-buffered: la copia CPU→PBO e il
+        trasferimento PBO→texture (DMA) sono asincroni, così l'upload NON stalla il
+        thread GL (a differenza di glTexSubImage2D da puntatore client). Alloca al
+        primo frame o quando cambiano le dimensioni. Il flip verticale è demandato
+        allo shader (uFlipV=1), non copiato in CPU. glPixelStorei(UNPACK_ALIGNMENT,1)
+        è impostato una volta in run().
         """
         h, w = int(frame.shape[0]), int(frame.shape[1])
+        size = w * h * 3  # RGB, 3 byte/pixel
+        frame = np.ascontiguousarray(frame)  # il PBO copia memoria contigua
 
-        # Frame RGB a 3 byte/pixel: con larghezza non multipla di 4 l'allineamento
-        # di default (4) sfalserebbe le righe. Forziamo l'allineamento a 1 byte.
-        glPixelStorei(GL_UNPACK_ALIGNMENT, 1)
-
+        # Crea (lazy) la texture al primo frame.
         if self._video_texture is None:
             self._video_texture = glGenTextures(1)
             glBindTexture(GL_TEXTURE_2D, self._video_texture)
@@ -1813,14 +1827,49 @@ class EqualizerOpenGLThread(threading.Thread):
             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE)
             self._video_tex_size = None
 
-        glBindTexture(GL_TEXTURE_2D, self._video_texture)
+        # Crea (lazy) i 2 PBO del ring.
+        if self._video_pbos is None:
+            self._video_pbos = list(glGenBuffers(2))
+            self._video_pbo_index = 0
+            self._video_pbo_size = 0
+
+        # (Ri)alloca la texture al primo frame o al cambio dimensione (storage vuoto).
         if self._video_tex_size != (w, h):
+            glBindTexture(GL_TEXTURE_2D, self._video_texture)
             glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, w, h, 0, GL_RGB,
-                         GL_UNSIGNED_BYTE, frame)
+                         GL_UNSIGNED_BYTE, None)
             self._video_tex_size = (w, h)
-        else:
-            glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, w, h, GL_RGB,
-                            GL_UNSIGNED_BYTE, frame)
+
+        # (Ri)alloca i PBO al cambio dimensione.
+        if self._video_pbo_size != size:
+            for pbo in self._video_pbos:
+                glBindBuffer(GL_PIXEL_UNPACK_BUFFER, pbo)
+                glBufferData(GL_PIXEL_UNPACK_BUFFER, size, None, GL_STREAM_DRAW)
+            self._video_pbo_size = size
+
+        idx = self._video_pbo_index
+
+        # 1) Copia CPU → PBO[idx]: orphaning (storage fresco → niente attesa sulla
+        #    DMA del frame precedente) + scrittura dei byte del frame.
+        glBindBuffer(GL_PIXEL_UNPACK_BUFFER, self._video_pbos[idx])
+        glBufferData(GL_PIXEL_UNPACK_BUFFER, size, None, GL_STREAM_DRAW)
+        glBufferSubData(GL_PIXEL_UNPACK_BUFFER, 0, size, frame)
+
+        # 2) PBO[idx] → texture: glTexSubImage2D legge dal PBO bound e ritorna subito
+        #    (DMA asincrona). NB: con un PBO bound l'ultimo argomento è un OFFSET nel
+        #    buffer, non un puntatore client → ctypes.c_void_p(0).
+        glBindTexture(GL_TEXTURE_2D, self._video_texture)
+        glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, w, h, GL_RGB,
+                        GL_UNSIGNED_BYTE, ctypes.c_void_p(0))
+
+        # 3) Sbinda il PBO: indispensabile, altrimenti la successiva glTexImage2D/
+        #    glTexSubImage2D dell'immagine di sfondo interpreterebbe il suo puntatore
+        #    come offset in questo PBO.
+        glBindBuffer(GL_PIXEL_UNPACK_BUFFER, 0)
+
+        # Alterna i due PBO: il frame N+1 usa l'altro buffer, così la copia CPU non
+        # aspetta la DMA del frame N.
+        self._video_pbo_index = 1 - idx
 
     # Il rendering è ora interamente in _render() (shader + instancing, core 3.3):
     # i vecchi draw_background/draw_bars (pipeline fixed-function) sono stati rimossi.
