@@ -11,8 +11,10 @@ import qdarktheme
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QIcon, QAction, QActionGroup
 from PySide6.QtWidgets import (
+    QFileDialog,
     QFrame,
     QGroupBox,
+    QInputDialog,
     QLabel,
     QListWidget,
     QMainWindow,
@@ -44,6 +46,9 @@ from gui.theme import (
     COLOR_STOP, COLOR_STOP_HOVER,
 )
 from resource_manager import ResourceManager
+import profiles
+from profiles import ProfileStore
+from gui.profile_bar_frame import ProfileBarFrame
 
 # Coda audio volutamente piccola: il renderer svuota tutta la coda a ogni frame
 # tenendo solo l'audio più recente, quindi una coda corta evita backlog/latenza.
@@ -51,7 +56,6 @@ MAX_QUEUE_SIZE = 8
 INITIAL_FREQUENCIES_BANDS = 9
 # Estensioni trattate come video (sfondo animato, solo renderer OpenGL).
 VIDEO_EXTENSIONS = ('.mp4', '.avi', '.mov', '.mkv')
-DEFAULT_BG_IMAGE = 'bg (19).png'
 
 # Mappa il tema esposto nell'interfaccia alla modalità di qdarktheme.
 _THEME_MODE = {"Light": "light", "Dark": "dark", "System": "auto"}
@@ -61,6 +65,10 @@ _COLOR_MODE_TO_INT = {"Classico": 0, "Tinta unica": 1, "Gradiente": 2, "Spettro"
 
 # Etichette del menu "Modalità" -> intero self._mode del renderer.
 _VIZ_MODE_TO_INT = {"Barre": 0, "Radiale": 1, "Oscilloscopio": 2, "Linea/Area": 3}
+
+# Mappe inverse (intero renderer -> etichetta GUI), usate dal caricamento profili.
+_INT_TO_COLOR_MODE = {v: k for k, v in _COLOR_MODE_TO_INT.items()}
+_INT_TO_VIZ_MODE = {v: k for k, v in _VIZ_MODE_TO_INT.items()}
 
 
 class AudioCaptureGUI(QMainWindow):
@@ -129,8 +137,12 @@ class AudioCaptureGUI(QMainWindow):
         self.last_device_selected = None
         self.help_window = None
 
+        # Store dei profili (gestore con nomi + import/export).
+        self._profile_store = ProfileStore()
+
         # Immagine di sfondo di default (PIL): usata dal renderer OpenGL.
-        self._default_bg_path = str(self.resource_manager.get_image_path(DEFAULT_BG_IMAGE, 'bg'))
+        self._default_bg_path = str(self.resource_manager.get_image_path(profiles.DEFAULT_BG_NAME, 'bg'))
+        self.bg_image_path = self._default_bg_path  # path immagine attiva (per i profili)
         self.bg_img = Image.open(self._default_bg_path)
 
         # Costruzione UI: pannello di controllo (nessuna anteprima)
@@ -641,6 +653,7 @@ class AudioCaptureGUI(QMainWindow):
         try:
             self.bg_video_path = None  # torna alla modalità immagine
             self.bg_img = Image.open(filename)
+            self.bg_image_path = filename
             self.update_bg_opengl(self.bg_img)
         except FileNotFoundError:
             QMessageBox.critical(self, 'Errore', 'File non trovato!')
@@ -957,6 +970,181 @@ class AudioCaptureGUI(QMainWindow):
 
     def show_no_audio_thread_warning(self):
         QMessageBox.information(self, 'Info', 'Select a device first!')
+
+    # --- Profili -------------------------------------------------------------
+    def _collect_profile(self) -> dict:
+        """Raccoglie lo stato corrente in un dict-profilo (unità native del renderer)."""
+        if self.bg_video_path:
+            bg = {"type": "video", "ref": profiles.encode_bg_ref(self.bg_video_path, self.resource_manager)}
+        else:
+            bg = {"type": "image", "ref": profiles.encode_bg_ref(self.bg_image_path, self.resource_manager)}
+        return {
+            "noise_threshold": float(self.noise_slider.get_value()),
+            "n_bands": int(self.frequency_slider.get_value()),
+            "db_floor": int(self.adv_db_floor_slider.get_value()),
+            "db_ceiling": int(self.adv_db_ceiling_slider.get_value()),
+            "attack_tau": self.adv_attack_slider.get_value() / 1000.0,
+            "release_tau": self.adv_release_slider.get_value() / 1000.0,
+            "tilt_db_per_oct": float(self.adv_tilt_slider.get_value()),
+            "viz_mode": int(self.viz_mode),
+            "bg_alpha": float(self.bg_alpha),
+            "bars_alpha": float(self.bars_alpha),
+            "background": bg,
+            "color_mode": int(self.bars_color_mode),
+            "color_a": list(self.bars_color_a),
+            "color_b": list(self.bars_color_b),
+            "green_split": float(self.bars_green_split),
+            "yellow_split": float(self.bars_yellow_split),
+            "bar_width": float(self.bars_width),
+            "rounded": bool(self.bars_rounded),
+            "anchor_center": bool(self.bars_anchor_center),
+            "band_symmetric": bool(self.bars_band_symmetric),
+            "inner_radius": float(self.viz_inner_radius),
+            "line_thickness": float(self.viz_line_thickness),
+            "fill": bool(self.viz_fill),
+            "osc_mirror": bool(self.viz_osc_mirror),
+            "osc_smoothing": float(self.viz_osc_smoothing),
+            "peakcap_enabled": bool(self.fx_peakcap_enabled),
+            "peakcap_color": list(self.fx_peakcap_color),
+            "peakcap_hold": float(self.fx_peakcap_hold),
+            "peakcap_fall": float(self.fx_peakcap_fall),
+            "bloom_enabled": bool(self.fx_bloom_enabled),
+            "bloom_intensity": float(self.fx_bloom_intensity),
+            "beat_enabled": bool(self.fx_beat_enabled),
+            "beat_intensity": float(self.fx_beat_intensity),
+            "beat_sensitivity": float(self.fx_beat_sensitivity),
+        }
+
+    def _apply_profile(self, s: dict) -> None:
+        """Applica un dict-profilo: widget + stato self.* + (se il renderer gira) control message."""
+        push = self.equalizer_opengl_thread is not None
+        q = self.equalizer_control_queue
+        viz_label = _INT_TO_VIZ_MODE.get(int(s["viz_mode"]), "Barre")
+        color_label = _INT_TO_COLOR_MODE.get(int(s["color_mode"]), "Classico")
+
+        # --- Audio ---
+        self.noise_slider.set_value(s["noise_threshold"])
+        self.frequency_slider.set_value(s["n_bands"])
+        if push:
+            q.put({"type": "set_noise_threshold", "value": float(s["noise_threshold"])})
+            q.put({"type": "set_frequency_bands", "value": int(s["n_bands"])})
+
+        # --- DSP avanzato (slider in ms, profilo in s) ---
+        self.adv_db_floor_slider.set_value(s["db_floor"])
+        self.adv_db_ceiling_slider.set_value(s["db_ceiling"])
+        self.adv_attack_slider.set_value(s["attack_tau"] * 1000.0)
+        self.adv_release_slider.set_value(s["release_tau"] * 1000.0)
+        self.adv_tilt_slider.set_value(s["tilt_db_per_oct"])
+        if push:
+            q.put({"type": "set_db_floor", "value": float(s["db_floor"])})
+            q.put({"type": "set_db_ceiling", "value": float(s["db_ceiling"])})
+            q.put({"type": "set_attack_tau", "value": float(s["attack_tau"])})
+            q.put({"type": "set_release_tau", "value": float(s["release_tau"])})
+            q.put({"type": "set_tilt_db_per_oct", "value": float(s["tilt_db_per_oct"])})
+
+        # --- Visualizzazione (viz_mode lo finalizza on_viz_mode_changed in fondo) ---
+        self.bg_alpha = float(s["bg_alpha"]); self.alpha_slider.set_value(self.bg_alpha)
+        self.bars_alpha = float(s["bars_alpha"]); self.bars_alpha_slider.set_value(self.bars_alpha)
+        self.viz_mode_option.set_value(viz_label)
+        if push:
+            q.put({"type": "set_alpha", "value": self.bg_alpha})
+            q.put({"type": "set_bars_alpha", "value": self.bars_alpha})
+
+        # --- Colore (color_mode lo finalizza on_color_mode_changed in fondo) ---
+        self.bars_mode_option.set_value(color_label)
+        self.bars_color_a = tuple(s["color_a"]); self.bars_color_b = tuple(s["color_b"])
+        self.bars_solid_color.set_color(self.bars_color_a)
+        self.bars_grad_base.set_color(self.bars_color_a)
+        self.bars_grad_top.set_color(self.bars_color_b)
+        self.bars_green_split = float(s["green_split"]); self.bars_yellow_thr.set_value(self.bars_green_split)
+        self.bars_yellow_split = float(s["yellow_split"]); self.bars_red_thr.set_value(self.bars_yellow_split)
+        if push:
+            q.put({"type": "set_color_a", "value": self.bars_color_a})
+            q.put({"type": "set_color_b", "value": self.bars_color_b})
+            q.put({"type": "set_green_split", "value": self.bars_green_split})
+            q.put({"type": "set_yellow_split", "value": self.bars_yellow_split})
+
+        # --- Forma ---
+        self.bars_width = float(s["bar_width"]); self.bars_width_slider.set_value(self.bars_width)
+        self.bars_rounded = bool(s["rounded"]); self.bars_rounded_option.set_value("Sì" if self.bars_rounded else "No")
+        self.bars_anchor_center = bool(s["anchor_center"]); self.bars_anchor_option.set_value("Centro" if self.bars_anchor_center else "Dal basso")
+        self.bars_band_symmetric = bool(s["band_symmetric"]); self.bars_order_option.set_value("Simmetrico" if self.bars_band_symmetric else "Standard")
+        self.viz_inner_radius = float(s["inner_radius"]); self.viz_inner_radius_slider.set_value(self.viz_inner_radius)
+        self.viz_line_thickness = float(s["line_thickness"]); self.viz_thickness_slider.set_value(self.viz_line_thickness)
+        self.viz_fill = bool(s["fill"]); self.viz_fill_option.set_value("Area" if self.viz_fill else "Linea")
+        self.viz_osc_mirror = bool(s["osc_mirror"]); self.viz_osc_mirror_option.set_value("Sì" if self.viz_osc_mirror else "No")
+        self.viz_osc_smoothing = float(s["osc_smoothing"]); self.viz_osc_smooth_slider.set_value(self.viz_osc_smoothing)
+        if push:
+            q.put({"type": "set_bar_width", "value": self.bars_width})
+            q.put({"type": "set_rounded", "value": self.bars_rounded})
+            q.put({"type": "set_bar_anchor", "value": self.bars_anchor_center})
+            q.put({"type": "set_band_order", "value": self.bars_band_symmetric})
+            q.put({"type": "set_inner_radius", "value": self.viz_inner_radius})
+            q.put({"type": "set_line_thickness", "value": self.viz_line_thickness})
+            q.put({"type": "set_fill", "value": self.viz_fill})
+            q.put({"type": "set_osc_mirror", "value": self.viz_osc_mirror})
+            q.put({"type": "set_osc_smoothing", "value": self.viz_osc_smoothing})
+
+        # --- Effetti (peakcap_hold: slider ms, profilo s) ---
+        self.fx_peakcap_enabled = bool(s["peakcap_enabled"]); self.fx_peakcap_option.set_value("On" if self.fx_peakcap_enabled else "Off")
+        self.fx_peakcap_color = tuple(s["peakcap_color"]); self.fx_peakcap_color_picker.set_color(self.fx_peakcap_color)
+        self.fx_peakcap_hold = float(s["peakcap_hold"]); self.fx_peakcap_hold_slider.set_value(self.fx_peakcap_hold * 1000.0)
+        self.fx_peakcap_fall = float(s["peakcap_fall"]); self.fx_peakcap_fall_slider.set_value(self.fx_peakcap_fall)
+        self.fx_bloom_enabled = bool(s["bloom_enabled"]); self.fx_bloom_option.set_value("On" if self.fx_bloom_enabled else "Off")
+        self.fx_bloom_intensity = float(s["bloom_intensity"]); self.fx_bloom_slider.set_value(self.fx_bloom_intensity)
+        self.fx_beat_enabled = bool(s["beat_enabled"]); self.fx_beat_option.set_value("On" if self.fx_beat_enabled else "Off")
+        self.fx_beat_intensity = float(s["beat_intensity"]); self.fx_beat_intensity_slider.set_value(self.fx_beat_intensity)
+        self.fx_beat_sensitivity = float(s["beat_sensitivity"]); self.fx_beat_sens_slider.set_value(self.fx_beat_sensitivity)
+        if push:
+            q.put({"type": "set_peakcap_enabled", "value": self.fx_peakcap_enabled})
+            q.put({"type": "set_peakcap_color", "value": self.fx_peakcap_color})
+            q.put({"type": "set_peakcap_hold", "value": self.fx_peakcap_hold})
+            q.put({"type": "set_peakcap_fall", "value": self.fx_peakcap_fall})
+            q.put({"type": "set_bloom_enabled", "value": self.fx_bloom_enabled})
+            q.put({"type": "set_bloom_intensity", "value": self.fx_bloom_intensity})
+            q.put({"type": "set_beat_enabled", "value": self.fx_beat_enabled})
+            q.put({"type": "set_beat_intensity", "value": self.fx_beat_intensity})
+            q.put({"type": "set_beat_sensitivity", "value": self.fx_beat_sensitivity})
+
+        # --- Sfondo (safe fallback) ---
+        self._apply_background_from_profile(s["background"])
+
+        # --- Visibilità condizionale + finalizzazione viz/color mode ---
+        # (le callback non scattano sul set programmatico dei combo; le invochiamo
+        #  ora: aggiornano visibilità, self.viz_mode/self.bars_color_mode e, se il
+        #  renderer gira, inviano set_viz_mode/set_color_mode)
+        self.on_color_mode_changed(color_label)
+        self.on_viz_mode_changed(viz_label)
+
+    def _apply_background_from_profile(self, bg: dict) -> None:
+        """Risolve e applica lo sfondo del profilo, con safe fallback all'immagine bundle."""
+        ref = bg.get("ref", {}) if isinstance(bg, dict) else {}
+        bg_type = bg.get("type", "image") if isinstance(bg, dict) else "image"
+        path, ok = profiles.resolve_bg_ref(ref, self.resource_manager)
+
+        if bg_type == "video" and ok:
+            self.bg_video_path = path
+            self.file_picker.set_filename(path)
+            if self.equalizer_opengl_thread:
+                self.equalizer_control_queue.put({"type": "set_video", "value": path})
+        else:
+            # immagine, oppure video mancante → fallback immagine
+            self.bg_video_path = None
+            self.bg_image_path = path
+            try:
+                self.bg_img = Image.open(path)
+            except Exception:
+                ok = False
+            self.file_picker.set_filename(path)
+            if self.equalizer_opengl_thread:
+                self.equalizer_control_queue.put({"type": "set_image", "value": self.bg_img})
+
+        if not ok:
+            ref_desc = ref.get("value") or ref.get("name") or str(ref)
+            QMessageBox.warning(
+                self, "Sfondo non trovato",
+                f"Sfondo non trovato: {ref_desc}. Uso lo sfondo predefinito.",
+            )
 
     # --- Ciclo di vita -------------------------------------------------------
     def closeEvent(self, event):
