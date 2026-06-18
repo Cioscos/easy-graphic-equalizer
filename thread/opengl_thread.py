@@ -14,6 +14,7 @@ from PIL.Image import Transpose
 
 from thread.AudioBufferAccumulator import AudioBufferAccumulator
 from thread.video_decode_thread import VideoDecodeThread
+from thread.frame_time_stats import FrameTimeStats
 
 RATE = 44100
 N_FFT = 4096
@@ -1539,6 +1540,10 @@ class EqualizerOpenGLThread(threading.Thread):
             # Timing preciso
             last_frame_time = glfw.get_time()
 
+            # Statistiche aggregate del frame time (solo sotto PERF_LOGS): budget
+            # = 1/refresh del monitor → "oltre-budget" conta i frame che mancano il vblank.
+            frame_stats = FrameTimeStats(report_every=120, budget_s=1.0 / max(self.frame_rate, 1)) if PERF_LOGS else None
+
             # -------------------------
             # MAIN LOOP
             # -------------------------
@@ -1605,9 +1610,10 @@ class EqualizerOpenGLThread(threading.Thread):
                 glfw.swap_buffers(window)
                 glfw.poll_events()
 
-                if PERF_LOGS and frame_delta > 0:
-                    fps = 1.0 / frame_delta
-                    print(f"PERF LOG: FrameTime = {frame_delta * 1000:.3f}ms (FPS ~ {fps:.1f})")
+                if frame_stats is not None and frame_delta > 0:
+                    report = frame_stats.add(frame_delta)
+                    if report:
+                        print(report)
         except Exception as exc:
             # Errore non gestito: notifica la GUI affinché ripristini lo stato
             # (equalizer_opengl_thread = None) invece di lasciare un thread morto.
