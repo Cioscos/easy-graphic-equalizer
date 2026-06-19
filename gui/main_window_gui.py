@@ -83,6 +83,7 @@ class AudioCaptureGUI(QMainWindow):
     # Emesso quando la finestra OpenGL si chiude: il callback parte sul thread
     # GLFW, il segnale lo marshalla sul thread GUI (connessione queued).
     _opengl_closed = Signal()
+    _setting_changed = Signal(dict)
 
     def __init__(self):
         super().__init__()
@@ -179,6 +180,7 @@ class AudioCaptureGUI(QMainWindow):
 
         self.nav.setCurrentRow(0)
         self._opengl_closed.connect(self._on_opengl_closed)
+        self._setting_changed.connect(self._on_setting_changed)
 
         # Auto-load dell'ultimo profilo usato (se ancora presente)
         last = self._profile_store.get_last()
@@ -972,6 +974,7 @@ class AudioCaptureGUI(QMainWindow):
                 osc_mirror=self.viz_osc_mirror,
                 osc_smoothing=self.viz_osc_smoothing,
                 monitor=self.selected_monitor,
+                on_setting_changed=self.inwindow_setting_changed,
                 window_close_callback=self.opengl_window_closed,
             )
             self.equalizer_opengl_thread.start()
@@ -981,9 +984,112 @@ class AudioCaptureGUI(QMainWindow):
         # Chiamato sul thread GLFW: marshalla sul thread GUI via segnale.
         self._opengl_closed.emit()
 
+    def inwindow_setting_changed(self, message: dict):
+        # Chiamato sul thread GL dall'overlay ImGui: marshalla sul thread GUI via
+        # segnale (consegnato in coda), come opengl_window_closed → _opengl_closed.
+        self._setting_changed.emit(message)
+
     def _on_opengl_closed(self):
         self.equalizer_opengl_thread = None
         self._set_fullscreen_button_running(False)
+
+    def _on_setting_changed(self, message: dict) -> None:
+        """
+        Slot (thread GUI): una modifica fatta dal menù in-window torna qui e aggiorna
+        il widget + lo stato self.* corrispondente, SENZA ri-mettere il messaggio sul
+        control queue (il renderer ha già applicato il valore → nessun loop). I setter
+        dei widget (set_value/set_color) bloccano i segnali, quindi non riscattano le
+        callback update_*. Per i due combo con visibilità (viz/color) richiamiamo le
+        on_*_changed: rimettono una sola volta lo stesso messaggio in coda (echo innocuo,
+        il renderer non genera on_change → niente loop).
+        """
+        t = message["type"]
+        v = message["value"]
+
+        # --- Audio (solo widget: il costruttore li rilegge dai widget) ---
+        if t == "set_noise_threshold":
+            self.noise_slider.set_value(v)
+        elif t == "set_frequency_bands":
+            self.frequency_slider.set_value(v)
+        elif t == "set_db_floor":
+            self.adv_db_floor_slider.set_value(v)
+        elif t == "set_db_ceiling":
+            self.adv_db_ceiling_slider.set_value(v)
+        elif t == "set_attack_tau":
+            self.adv_attack_slider.set_value(v * 1000.0)   # s → ms
+        elif t == "set_release_tau":
+            self.adv_release_slider.set_value(v * 1000.0)  # s → ms
+        elif t == "set_tilt_db_per_oct":
+            self.adv_tilt_slider.set_value(v)
+
+        # --- Visualizzazione ---
+        elif t == "set_alpha":
+            self.bg_alpha = float(v); self.alpha_slider.set_value(self.bg_alpha)
+        elif t == "set_bars_alpha":
+            self.bars_alpha = float(v); self.bars_alpha_slider.set_value(self.bars_alpha)
+        elif t == "set_viz_mode":
+            label = _INT_TO_VIZ_MODE.get(int(v), "Barre")
+            self.viz_mode_option.set_value(label)   # silenzioso (blockSignals)
+            self.on_viz_mode_changed(label)          # visibilità + self.viz_mode (+ echo)
+
+        # --- Colore ---
+        elif t == "set_color_mode":
+            label = _INT_TO_COLOR_MODE.get(int(v), "Classico")
+            self.bars_mode_option.set_value(label)
+            self.on_color_mode_changed(label)        # visibilità + self.bars_color_mode (+ echo)
+        elif t == "set_color_a":
+            self.bars_color_a = tuple(v)
+            self.bars_solid_color.set_color(self.bars_color_a)
+            self.bars_grad_base.set_color(self.bars_color_a)
+        elif t == "set_color_b":
+            self.bars_color_b = tuple(v)
+            self.bars_grad_top.set_color(self.bars_color_b)
+        elif t == "set_green_split":
+            self.bars_green_split = float(v); self.bars_yellow_thr.set_value(self.bars_green_split)
+        elif t == "set_yellow_split":
+            self.bars_yellow_split = float(v); self.bars_red_thr.set_value(self.bars_yellow_split)
+
+        # --- Forma ---
+        elif t == "set_bar_width":
+            self.bars_width = float(v); self.bars_width_slider.set_value(self.bars_width)
+        elif t == "set_rounded":
+            self.bars_rounded = bool(v); self.bars_rounded_option.set_value("Sì" if self.bars_rounded else "No")
+        elif t == "set_bar_anchor":
+            self.bars_anchor_center = bool(v)
+            self.bars_anchor_option.set_value("Centro" if self.bars_anchor_center else "Dal basso")
+        elif t == "set_band_order":
+            self.bars_band_symmetric = bool(v)
+            self.bars_order_option.set_value("Simmetrico" if self.bars_band_symmetric else "Standard")
+        elif t == "set_inner_radius":
+            self.viz_inner_radius = float(v); self.viz_inner_radius_slider.set_value(self.viz_inner_radius)
+        elif t == "set_line_thickness":
+            self.viz_line_thickness = float(v); self.viz_thickness_slider.set_value(self.viz_line_thickness)
+        elif t == "set_fill":
+            self.viz_fill = bool(v); self.viz_fill_option.set_value("Area" if self.viz_fill else "Linea")
+        elif t == "set_osc_mirror":
+            self.viz_osc_mirror = bool(v); self.viz_osc_mirror_option.set_value("Sì" if self.viz_osc_mirror else "No")
+        elif t == "set_osc_smoothing":
+            self.viz_osc_smoothing = float(v); self.viz_osc_smooth_slider.set_value(self.viz_osc_smoothing)
+
+        # --- Effetti ---
+        elif t == "set_peakcap_enabled":
+            self.fx_peakcap_enabled = bool(v); self.fx_peakcap_option.set_value("On" if self.fx_peakcap_enabled else "Off")
+        elif t == "set_peakcap_color":
+            self.fx_peakcap_color = tuple(v); self.fx_peakcap_color_picker.set_color(self.fx_peakcap_color)
+        elif t == "set_peakcap_hold":
+            self.fx_peakcap_hold = float(v); self.fx_peakcap_hold_slider.set_value(self.fx_peakcap_hold * 1000.0)  # s → ms
+        elif t == "set_peakcap_fall":
+            self.fx_peakcap_fall = float(v); self.fx_peakcap_fall_slider.set_value(self.fx_peakcap_fall)
+        elif t == "set_bloom_enabled":
+            self.fx_bloom_enabled = bool(v); self.fx_bloom_option.set_value("On" if self.fx_bloom_enabled else "Off")
+        elif t == "set_bloom_intensity":
+            self.fx_bloom_intensity = float(v); self.fx_bloom_slider.set_value(self.fx_bloom_intensity)
+        elif t == "set_beat_enabled":
+            self.fx_beat_enabled = bool(v); self.fx_beat_option.set_value("On" if self.fx_beat_enabled else "Off")
+        elif t == "set_beat_intensity":
+            self.fx_beat_intensity = float(v); self.fx_beat_intensity_slider.set_value(self.fx_beat_intensity)
+        elif t == "set_beat_sensitivity":
+            self.fx_beat_sensitivity = float(v); self.fx_beat_sens_slider.set_value(self.fx_beat_sensitivity)
 
     # --- Help / avvisi -------------------------------------------------------
     def open_help_window(self):
