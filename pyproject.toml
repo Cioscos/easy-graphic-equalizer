@@ -20,4 +20,5 @@ dependencies = [
     "glfw",
     "imageio>=2.37.3",
     "imageio-ffmpeg>=0.6.0",
+    "imgui-bundle>=1.92.801",
 ]
