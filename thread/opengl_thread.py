@@ -15,6 +15,8 @@ from PIL.Image import Transpose
 from thread.AudioBufferAccumulator import AudioBufferAccumulator
 from thread.video_decode_thread import VideoDecodeThread
 from thread.frame_time_stats import FrameTimeStats
+from thread.imgui_overlay import ImGuiOverlay
+from thread.menu_keys import toggle_key_to_glfw
 
 RATE = 44100
 N_FFT = 4096
@@ -485,6 +487,8 @@ class EqualizerOpenGLThread(threading.Thread):
                  fill: bool = True,
                  osc_mirror: bool = False,
                  osc_smoothing: float = 0.5,
+                 menu_toggle_key: str = "F1",
+                 on_setting_changed: Callable = None,
                  window_close_callback: Callable = None):
         super().__init__()
         self._audio_queue = audio_queue
@@ -497,6 +501,12 @@ class EqualizerOpenGLThread(threading.Thread):
         self._bg_alpha = bg_alpha
         self._bars_alpha = bars_alpha
         self.window_close_callback = window_close_callback
+
+        # --- Menù in-window (overlay ImGui) ---
+        self._on_setting_changed = on_setting_changed   # callback verso la GUI (sync inverso)
+        self._menu_toggle_key = str(menu_toggle_key)     # nome tasto (per profili / menù)
+        self._menu_toggle_glfw_key = toggle_key_to_glfw(menu_toggle_key)  # codice GLFW
+        self._imgui_overlay = None                       # creato in run(), a contesto GL attivo
 
         # --- Taratura DSP regolabile a runtime (default = costanti di modulo). ---
         # I metodi leggono questi attributi, non le costanti globali, così la GUI
@@ -1382,6 +1392,11 @@ class EqualizerOpenGLThread(threading.Thread):
         elif message_type == 'set_osc_mirror':
             self._osc_mirror = bool(message['value'])
 
+        elif message_type == 'set_menu_toggle_key':
+            # Cambia il tasto che apre/chiude il menù in-window (nome → codice GLFW).
+            self._menu_toggle_key = str(message['value'])
+            self._menu_toggle_glfw_key = toggle_key_to_glfw(message['value'])
+
         elif message_type == 'set_image':
             # L'immagine sostituisce il video: ferma l'eventuale riproduzione.
             self._stop_video()
@@ -1552,7 +1567,25 @@ class EqualizerOpenGLThread(threading.Thread):
 
             # Disable auto iconify
             glfw.set_window_attrib(window, glfw.AUTO_ICONIFY, glfw.FALSE)
+            # Overlay ImGui (menù in-window). Creabile solo a contesto GL attivo.
+            self._imgui_overlay = ImGuiOverlay(
+                window,
+                renderer=self,
+                control_queue=self._control_queue,
+                on_change=self._on_setting_changed,
+            )
+            impl = self._imgui_overlay.impl
+            # La NOSTRA key_callback gestisce toggle/ESC e inoltra a ImGui; le altre
+            # callback vanno direttamente agli handler del backend (attach_callbacks=False
+            # → il backend NON le concatena, le registriamo noi).
             glfw.set_key_callback(window, self.key_callback)
+            glfw.set_char_callback(window, impl.char_callback)
+            glfw.set_cursor_pos_callback(window, impl.mouse_callback)
+            glfw.set_mouse_button_callback(window, impl.mouse_button_callback)
+            glfw.set_scroll_callback(window, impl.scroll_callback)
+            glfw.set_window_size_callback(window, impl.resize_callback)
+            # Menù chiuso all'avvio → cursore nascosto (visualizzazione pulita).
+            glfw.set_input_mode(window, glfw.CURSOR, glfw.CURSOR_HIDDEN)
 
             # Compila shader e crea VAO/VBO, poi carica la texture di sfondo (a contesto attivo)
             self.init_gl_objects()
@@ -1632,6 +1665,10 @@ class EqualizerOpenGLThread(threading.Thread):
                 # 4) Disegna il frame (modalità corrente) con i valori smoothed
                 self._render(smoothed_amplitudes, waveform, frame_delta)
 
+                # 5) Overlay ImGui (menù in-window): disegnato per ultimo, sul
+                #    framebuffer di default, sopra barre/sfondo.
+                self._imgui_overlay.render_frame()
+
                 glfw.swap_buffers(window)
                 glfw.poll_events()
 
@@ -1648,6 +1685,10 @@ class EqualizerOpenGLThread(threading.Thread):
         finally:
             # Ferma il decoder video e il subprocess ffmpeg prima di liberare il GL.
             self._stop_video()
+            # Chiudi l'overlay ImGui mentre il contesto GL è ancora valido.
+            if self._imgui_overlay is not None:
+                self._imgui_overlay.shutdown()
+                self._imgui_overlay = None
             # Cleanup garantito: risorse GL, finestra e GLFW (sicuro anche su init parziale).
             self._cleanup_gl()
             if window is not None:
@@ -1662,20 +1703,40 @@ class EqualizerOpenGLThread(threading.Thread):
 
     def key_callback(self, window, key, scancode, action, mods):
         """
-        Callback per i tasti. ESC chiude la finestra.
-
-        Args:
-            window: Window GLFW
-            key: Codice del tasto
-            scancode: Scancode del tasto
-            action: Azione (PRESS/RELEASE)
-            mods: Modificatori
+        Callback tasti. Inoltra prima l'evento al backend ImGui (per testo/navigazione
+        del menù), poi gestisce il tasto-toggle del menù ed ESC. ESC: chiude il menù se
+        aperto, altrimenti esce dal fullscreen (comportamento storico).
         """
-        if key == glfw.KEY_ESCAPE and action == glfw.PRESS:
+        # Inoltra al backend ImGui (registrato con attach_callbacks=False).
+        if self._imgui_overlay is not None:
+            self._imgui_overlay.impl.keyboard_callback(window, key, scancode, action, mods)
+
+        if action != glfw.PRESS:
+            return
+
+        # Tasto-toggle configurabile: apre/chiude il menù.
+        if key == self._menu_toggle_glfw_key and self._imgui_overlay is not None:
+            self._imgui_overlay.toggle()
+            self._apply_cursor_mode(window)
+            return
+
+        if key == glfw.KEY_ESCAPE:
+            # Menù aperto → ESC lo chiude (non esce dal fullscreen).
+            if self._imgui_overlay is not None and self._imgui_overlay.is_open():
+                self._imgui_overlay.set_open(False)
+                self._apply_cursor_mode(window)
+                return
+            # Menù chiuso → comportamento storico: esci dal fullscreen.
             glfw.set_window_should_close(window, True)
             self.stop()
             if self.window_close_callback:
                 self.window_close_callback()
+
+    def _apply_cursor_mode(self, window):
+        """Cursore visibile col menù aperto, nascosto col menù chiuso."""
+        is_open = self._imgui_overlay is not None and self._imgui_overlay.is_open()
+        mode = glfw.CURSOR_NORMAL if is_open else glfw.CURSOR_HIDDEN
+        glfw.set_input_mode(window, glfw.CURSOR, mode)
 
     def load_texture(self):
         """
