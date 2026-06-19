@@ -43,7 +43,7 @@ else:
     hiddenimports += ['OpenGL.platform.egl', 'OpenGL.platform.glx', 'OpenGL.platform.osmesa']
 
 # Collect full package payloads (data files, bundled native libs, submodules).
-for _pkg in ('qdarktheme', 'imageio_ffmpeg', 'glfw'):
+for _pkg in ('qdarktheme', 'imageio_ffmpeg', 'glfw', 'imgui_bundle'):
     _d, _b, _h = collect_all(_pkg)
     datas += _d
     binaries += _b
