@@ -95,6 +95,13 @@ class ImGuiOverlay:
                 changed, val = imgui.slider_float("Opacità barre", float(r._bars_alpha), 0.0, 1.0)
                 if changed:
                     self._emit("set_bars_alpha", float(val))
+                try:
+                    key_idx = TOGGLE_KEY_NAMES.index(r._menu_toggle_key)
+                except ValueError:
+                    key_idx = 0
+                changed, key_idx = imgui.combo("Tasto menù", key_idx, TOGGLE_KEY_NAMES)
+                if changed:
+                    self._emit("set_menu_toggle_key", TOGGLE_KEY_NAMES[key_idx])
                 imgui.end_tab_item()
 
             # ---------------- Forma ----------------

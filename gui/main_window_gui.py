@@ -27,6 +27,7 @@ from PySide6.QtWidgets import (
 )
 
 from thread.audioCaptureThread import AudioCaptureThread
+from thread.menu_keys import TOGGLE_KEY_NAMES
 from thread.opengl_thread import (
     EqualizerOpenGLThread,
     DB_FLOOR, DB_CEILING, ATTACK_TAU, RELEASE_TAU, TILT_DB_PER_OCT,
@@ -98,6 +99,7 @@ class AudioCaptureGUI(QMainWindow):
         self.bars_alpha = 1.0  # opacità delle barre nel renderer OpenGL (1.0 = piene)
 
         # Stato GUI dell'aspetto barre (Blocco 1). Default = look attuale.
+        self.menu_toggle_key = "F1"   # tasto che apre/chiude il menù in-window
         self.bars_color_mode = 0
         self.bars_color_a = (0.231, 0.420, 1.0)
         self.bars_color_b = (1.0, 0.231, 0.816)
@@ -364,6 +366,12 @@ class AudioCaptureGUI(QMainWindow):
             command=self.update_bars_alpha,
             initial_value=self.bars_alpha,
         )
+        self.menu_toggle_option = OptionMenuCustomFrame(
+            header_name='Tasto menù in-window:',
+            values=TOGGLE_KEY_NAMES,
+            initial_value=self.menu_toggle_key,
+            command=self.update_menu_toggle_key,
+        )
 
         resa_widgets = [self.bars_alpha_slider]
         if len(self.available_monitors) > 1:
@@ -379,6 +387,7 @@ class AudioCaptureGUI(QMainWindow):
             self._group("Modalità", self.viz_mode_option),
             self._group("Sfondo", self.file_picker, self.alpha_slider),
             self._group("Resa", *resa_widgets),
+            self._group("Menù in-window", self.menu_toggle_option),
         )
 
     def _build_audio_page(self) -> QWidget:
@@ -884,6 +893,11 @@ class AudioCaptureGUI(QMainWindow):
         if self.equalizer_opengl_thread:
             self.equalizer_control_queue.put({"type": "set_release_tau", "value": float(value) / 1000.0})
 
+    def update_menu_toggle_key(self, label: str):
+        self.menu_toggle_key = label
+        if self.equalizer_opengl_thread:
+            self.equalizer_control_queue.put({"type": "set_menu_toggle_key", "value": label})
+
     def update_tilt(self, value):
         if self.equalizer_opengl_thread:
             self.equalizer_control_queue.put({"type": "set_tilt_db_per_oct", "value": float(value)})
@@ -974,6 +988,7 @@ class AudioCaptureGUI(QMainWindow):
                 osc_mirror=self.viz_osc_mirror,
                 osc_smoothing=self.viz_osc_smoothing,
                 monitor=self.selected_monitor,
+                menu_toggle_key=self.menu_toggle_key,
                 on_setting_changed=self.inwindow_setting_changed,
                 window_close_callback=self.opengl_window_closed,
             )
@@ -1090,6 +1105,8 @@ class AudioCaptureGUI(QMainWindow):
             self.fx_beat_intensity = float(v); self.fx_beat_intensity_slider.set_value(self.fx_beat_intensity)
         elif t == "set_beat_sensitivity":
             self.fx_beat_sensitivity = float(v); self.fx_beat_sens_slider.set_value(self.fx_beat_sensitivity)
+        elif t == "set_menu_toggle_key":
+            self.menu_toggle_key = str(v); self.menu_toggle_option.set_value(self.menu_toggle_key)
 
     # --- Help / avvisi -------------------------------------------------------
     def open_help_window(self):
@@ -1135,6 +1152,7 @@ class AudioCaptureGUI(QMainWindow):
             "fill": bool(self.viz_fill),
             "osc_mirror": bool(self.viz_osc_mirror),
             "osc_smoothing": float(self.viz_osc_smoothing),
+            "menu_toggle_key": self.menu_toggle_key,
             "peakcap_enabled": bool(self.fx_peakcap_enabled),
             "peakcap_color": list(self.fx_peakcap_color),
             "peakcap_hold": float(self.fx_peakcap_hold),
@@ -1177,9 +1195,12 @@ class AudioCaptureGUI(QMainWindow):
         self.bg_alpha = float(s["bg_alpha"]); self.alpha_slider.set_value(self.bg_alpha)
         self.bars_alpha = float(s["bars_alpha"]); self.bars_alpha_slider.set_value(self.bars_alpha)
         self.viz_mode_option.set_value(viz_label)
+        self.menu_toggle_key = str(s.get("menu_toggle_key", "F1"))
+        self.menu_toggle_option.set_value(self.menu_toggle_key)
         if push:
             q.put({"type": "set_alpha", "value": self.bg_alpha})
             q.put({"type": "set_bars_alpha", "value": self.bars_alpha})
+            q.put({"type": "set_menu_toggle_key", "value": self.menu_toggle_key})
 
         # --- Colore (color_mode lo finalizza on_color_mode_changed in fondo) ---
         self.bars_mode_option.set_value(color_label)
