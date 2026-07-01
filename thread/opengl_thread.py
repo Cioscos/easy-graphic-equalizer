@@ -12,6 +12,8 @@ import numpy as np
 from PIL import Image
 from PIL.Image import Transpose
 
+from imgui_bundle import imgui
+
 from thread.AudioBufferAccumulator import AudioBufferAccumulator
 from thread.video_decode_thread import VideoDecodeThread
 from thread.frame_time_stats import FrameTimeStats
@@ -1730,6 +1732,14 @@ class EqualizerOpenGLThread(threading.Thread):
             self._imgui_overlay.impl.keyboard_callback(window, key, scancode, action, mods)
 
         if action != glfw.PRESS:
+            return
+
+        # Se ImGui sta usando la tastiera per un campo di testo (es. Ctrl+click
+        # su uno slider del menù), toggle ed ESC appartengono a lui: gestirli
+        # qui chiuderebbe il menù a metà editing. (want_text_input e non
+        # want_capture_keyboard: il secondo è vero ogni volta che il menù è
+        # sotto il mouse e renderebbe impossibile chiuderlo col toggle.)
+        if self._imgui_overlay is not None and imgui.get_io().want_text_input:
             return
 
         # Tasto-toggle configurabile: apre/chiude il menù.
