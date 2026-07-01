@@ -290,7 +290,14 @@ class ProfileStore:
 
     def import_file(self, src_path) -> str:
         raw = json.loads(Path(src_path).read_text(encoding="utf-8"))
-        settings = deserialize(raw.get("settings", {}))
+        # Valida l'envelope: senza questo check QUALUNQUE JSON dict-shaped
+        # (es. package.json) diventerebbe in silenzio un profilo tutto-default.
+        # `version` è letto ma non bloccato: tolleranza in avanti.
+        if not isinstance(raw, dict) or raw.get("app") != APP_TAG:
+            raise ValueError("il file non è un profilo Sound Wave")
+        if not isinstance(raw.get("settings"), dict):
+            raise ValueError("profilo senza sezione settings valida")
+        settings = deserialize(raw["settings"])
         base = sanitize_name(Path(src_path).stem)
         existing = set(self.list_names())
         name, i = base, 2

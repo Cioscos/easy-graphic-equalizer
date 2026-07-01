@@ -161,6 +161,18 @@ def test_deserialize_out_of_range_clamped():
     assert out["beat_sensitivity"] == 1.05
 
 
+def test_store_import_foreign_json_rejected():
+    store, tmp = _fresh_store()
+    foreign = Path(tmp) / "package.json"
+    foreign.write_text('{"name": "x", "version": "1.0.0"}', encoding="utf-8")
+    try:
+        store.import_file(foreign)
+    except ValueError:
+        assert store.list_names() == []   # niente profilo fantasma
+        return
+    raise AssertionError("import_file doveva rifiutare un JSON estraneo")
+
+
 def test_menu_toggle_key_roundtrip():
     s = dict(profiles.DEFAULTS)
     s["menu_toggle_key"] = "M"
@@ -209,6 +221,7 @@ def main():
         test_deserialize_wrong_types_fall_back_to_defaults()
         test_deserialize_out_of_range_clamped()
         test_menu_toggle_key_roundtrip()
+        test_store_import_foreign_json_rejected()
         print("OK")
     finally:
         for t in _TMPDIRS:
