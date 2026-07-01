@@ -952,8 +952,9 @@ class AudioCaptureGUI(QMainWindow):
 
         if self.equalizer_opengl_thread:
             self.equalizer_opengl_thread.stop()
-            while self.equalizer_opengl_thread.is_alive():
-                self.equalizer_opengl_thread.join(timeout=0.1)
+            # Join limitato: con lo stop non più inghiottibile (fix C1) il
+            # teardown è rapido; il limite protegge comunque la GUI.
+            self.equalizer_opengl_thread.join(timeout=5.0)
             self.equalizer_opengl_thread = None
             self._set_fullscreen_button_running(False)
         else:
@@ -1013,7 +1014,13 @@ class AudioCaptureGUI(QMainWindow):
         self._setting_changed.emit(message)
 
     def _on_opengl_closed(self):
-        self.equalizer_opengl_thread = None
+        # Il callback parte a teardown GLFW completato, quindi il join è quasi
+        # istantaneo. Idempotente: se lo stop è partito dalla GUI (fullscreen_
+        # command/closeEvent) il riferimento è già None e resta solo il bottone.
+        thread = self.equalizer_opengl_thread
+        if thread is not None:
+            thread.join(timeout=2.0)
+            self.equalizer_opengl_thread = None
         self._set_fullscreen_button_running(False)
 
     def _on_setting_changed(self, message: dict) -> None:
@@ -1388,7 +1395,6 @@ class AudioCaptureGUI(QMainWindow):
 
         if self.equalizer_opengl_thread:
             self.equalizer_opengl_thread.stop()
-            while self.equalizer_opengl_thread.is_alive():
-                self.equalizer_opengl_thread.join(timeout=0.1)
+            self.equalizer_opengl_thread.join(timeout=5.0)
 
         event.accept()

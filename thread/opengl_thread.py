@@ -1673,11 +1673,7 @@ class EqualizerOpenGLThread(threading.Thread):
                     if report:
                         print(report)
         except Exception as exc:
-            # Errore non gestito: notifica la GUI affinché ripristini lo stato
-            # (equalizer_opengl_thread = None) invece di lasciare un thread morto.
             print(f"OpenGL thread error: {exc}")
-            if self.window_close_callback:
-                self.window_close_callback()
         finally:
             # Ferma il decoder video e il subprocess ffmpeg prima di liberare il GL.
             self._stop_video()
@@ -1690,6 +1686,11 @@ class EqualizerOpenGLThread(threading.Thread):
             if window is not None:
                 glfw.destroy_window(window)
             glfw.terminate()
+            # Notifica UNICA alla GUI, a teardown completato: ogni percorso di
+            # uscita (ESC, Alt-F4, stop da GUI, eccezione) converge qui. Copre
+            # anche la chiusura dal window manager, che prima moriva in silenzio.
+            if self.window_close_callback:
+                self.window_close_callback()
 
     def stop(self):
         """
@@ -1723,10 +1724,10 @@ class EqualizerOpenGLThread(threading.Thread):
                 self._apply_cursor_mode(window)
                 return
             # Menù chiuso → comportamento storico: esci dal fullscreen.
+            # La notifica alla GUI parte dal finally di run(), a teardown
+            # completato: un riavvio non può sovrapporsi a init/terminate GLFW.
             glfw.set_window_should_close(window, True)
             self.stop()
-            if self.window_close_callback:
-                self.window_close_callback()
 
     def _apply_cursor_mode(self, window):
         """Cursore visibile col menù aperto, nascosto col menù chiuso."""
