@@ -161,6 +161,29 @@ def test_deserialize_out_of_range_clamped():
     assert out["beat_sensitivity"] == 1.05
 
 
+def test_get_last_non_dict_settings_returns_none():
+    store, tmp = _fresh_store()
+    (Path(tmp) / "settings.json").write_text('["x"]', encoding="utf-8")
+    assert store.get_last() is None
+
+
+def test_sanitize_name_windows_reserved():
+    assert profiles.sanitize_name("CON") == "CON_"
+    assert profiles.sanitize_name("con") == "con_"
+    assert profiles.sanitize_name("COM1") == "COM1_"
+    assert profiles.sanitize_name("Console") == "Console"  # non riservato
+
+
+def test_list_names_skips_unresolvable_stems():
+    store, tmp = _fresh_store()
+    store.save("buono", dict(profiles.DEFAULTS))
+    # File creato esternamente con un carattere fuori whitelist (legale su
+    # Linux, dove girano i test): verrebbe listato ma _path_for lo
+    # risanitizzerebbe su un file diverso → mai caricabile/eliminabile.
+    (Path(tmp) / "profiles" / "foo?bar.json").write_text("{}", encoding="utf-8")
+    assert store.list_names() == ["buono"]
+
+
 def test_store_import_foreign_json_rejected():
     store, tmp = _fresh_store()
     foreign = Path(tmp) / "package.json"
@@ -222,6 +245,9 @@ def main():
         test_deserialize_out_of_range_clamped()
         test_menu_toggle_key_roundtrip()
         test_store_import_foreign_json_rejected()
+        test_get_last_non_dict_settings_returns_none()
+        test_sanitize_name_windows_reserved()
+        test_list_names_skips_unresolvable_stems()
         print("OK")
     finally:
         for t in _TMPDIRS:

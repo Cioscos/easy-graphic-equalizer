@@ -180,10 +180,18 @@ def deserialize(raw: dict) -> dict:
     return out
 
 
+_WINDOWS_RESERVED = re.compile(r"^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])$", re.IGNORECASE)
+
+
 def sanitize_name(name: str) -> str:
-    """Nome profilo → nome-file sicuro (preserva lettere accentate, rimuove separatori)."""
+    """Nome profilo → nome-file sicuro (preserva lettere accentate, rimuove
+    separatori, evita i nomi-device riservati di Windows)."""
     cleaned = _INVALID_NAME.sub("_", (name or "").strip()).strip(". ")
-    return cleaned or "profilo"
+    if not cleaned:
+        return "profilo"
+    if _WINDOWS_RESERVED.match(cleaned):
+        return cleaned + "_"
+    return cleaned
 
 
 def _default_bg_path(rm: ResourceManager) -> str:
@@ -209,24 +217,30 @@ def encode_bg_ref(path: str, rm: ResourceManager) -> dict:
 def resolve_bg_ref(ref: dict, rm: ResourceManager) -> Tuple[str, bool]:
     """Risolve un riferimento-sfondo in un path assoluto.
 
-    Ritorna (path, ok). Se il file non esiste → (path predefinito bundle, False).
+    Ritorna (path, ok). Se il file non esiste → (path predefinito bundle, False);
+    se manca anche l'asset predefinito → ("", False): il chiamante tratta il
+    path vuoto come "nessuno sfondo" (il resolver non deve MAI sollevare).
     """
-    default = _default_bg_path(rm)
+    def _default() -> str:
+        try:
+            return _default_bg_path(rm)
+        except FileNotFoundError:
+            return ""
+
     if not isinstance(ref, dict):
-        return default, False
+        return _default(), False
     kind = ref.get("kind")
     if kind == "resource":
         name = ref.get("name") or DEFAULT_BG_NAME
         try:
             return str(rm.get_image_path(name, "bg")), True
         except FileNotFoundError:
-            return default, False
+            return _default(), False
     if kind == "path":
         value = ref.get("value") or ""
         if value and os.path.isfile(value):
             return value, True
-        return default, False
-    return default, False
+    return _default(), False
 
 
 def _default_config_dir() -> Path:
@@ -267,7 +281,14 @@ class ProfileStore:
         return self.profiles_dir / f"{sanitize_name(name)}.json"
 
     def list_names(self) -> List[str]:
-        return sorted(p.stem for p in self.profiles_dir.glob("*.json"))
+        # Espone solo stem stabili al round-trip di sanitizzazione: un file
+        # creato esternamente con caratteri fuori whitelist verrebbe listato
+        # ma _path_for lo risolverebbe su un ALTRO file → load/delete/export
+        # fallirebbero per sempre su quella voce.
+        return sorted(
+            p.stem for p in self.profiles_dir.glob("*.json")
+            if sanitize_name(p.stem) == p.stem
+        )
 
     def load(self, name: str) -> dict:
         raw = json.loads(self._path_for(name).read_text(encoding="utf-8"))
@@ -310,7 +331,7 @@ class ProfileStore:
     def get_last(self) -> Optional[str]:
         try:
             data = json.loads(self._settings_file.read_text(encoding="utf-8"))
-            return data.get("last_profile")
+            return data.get("last_profile") if isinstance(data, dict) else None
         except (json.JSONDecodeError, OSError):
             return None
 

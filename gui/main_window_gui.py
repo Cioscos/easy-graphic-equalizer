@@ -147,9 +147,15 @@ class AudioCaptureGUI(QMainWindow):
         self._profile_store = ProfileStore()
 
         # Immagine di sfondo di default (PIL): usata dal renderer OpenGL.
-        self._default_bg_path = str(self.resource_manager.get_image_path(profiles.DEFAULT_BG_NAME, 'bg'))
+        # Un'installazione con asset mancante non deve impedire l'avvio: il
+        # renderer gestisce bg_image=None (nessuno sfondo).
+        try:
+            self._default_bg_path = str(self.resource_manager.get_image_path(profiles.DEFAULT_BG_NAME, 'bg'))
+            self.bg_img = Image.open(self._default_bg_path)
+        except Exception:
+            self._default_bg_path = ""
+            self.bg_img = None
         self.bg_image_path = self._default_bg_path  # path immagine attiva (per i profili)
-        self.bg_img = Image.open(self._default_bg_path)
 
         # Costruzione UI: pannello di controllo (nessuna anteprima)
         self._build_menu_bar()
