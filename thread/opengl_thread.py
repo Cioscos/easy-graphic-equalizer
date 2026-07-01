@@ -1534,10 +1534,6 @@ class EqualizerOpenGLThread(threading.Thread):
             # Posizionala esattamente sul monitor scelto così lo copre tutto.
             glfw.set_window_pos(window, monitor_x, monitor_y)
 
-            # check if the stop event is set
-            if self.stop_event.is_set():
-                self.stop_event.clear()
-
             glfw.make_context_current(window)
             gl_version = glGetString(GL_VERSION)
             print(f"OpenGL version: {gl_version.decode() if gl_version else '?'}")
