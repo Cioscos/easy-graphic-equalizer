@@ -17,6 +17,7 @@ from thread.video_decode_thread import VideoDecodeThread
 from thread.frame_time_stats import FrameTimeStats
 from thread.imgui_overlay import ImGuiOverlay
 from thread.menu_keys import toggle_key_to_glfw
+from thread.render_params import effective_splits
 
 RATE = 44100
 N_FFT = 4096
@@ -950,8 +951,9 @@ class EqualizerOpenGLThread(threading.Thread):
         glUniform1i(self._strip_uniforms["uColorMode"], int(self._color_mode))
         glUniform3f(self._strip_uniforms["uColorA"], *self._color_a)
         glUniform3f(self._strip_uniforms["uColorB"], *self._color_b)
-        glUniform1f(self._strip_uniforms["uGreenSplit"], self._green_split)
-        glUniform1f(self._strip_uniforms["uYellowSplit"], self._yellow_split)
+        g_split, y_split = effective_splits(self._green_split, self._yellow_split)
+        glUniform1f(self._strip_uniforms["uGreenSplit"], g_split)
+        glUniform1f(self._strip_uniforms["uYellowSplit"], y_split)
         glUniform1f(self._strip_uniforms["uBarsAlpha"], float(self._bars_alpha))
         # Area (Linea/Area con riempimento): alpha che sfuma verso la base → niente "muro".
         fade = 1.0 if (self._mode == MODE_LINE and self._fill) else 0.0
@@ -1006,8 +1008,9 @@ class EqualizerOpenGLThread(threading.Thread):
         glUseProgram(self._bars_program)
         glUniform1f(self._bars_uniforms["uNumBars"], float(num_bars))
         glUniform1f(self._bars_uniforms["uBarWidthFrac"], float(self._bar_width_frac))
-        glUniform1f(self._bars_uniforms["uGreenSplit"], self._green_split)
-        glUniform1f(self._bars_uniforms["uYellowSplit"], self._yellow_split)
+        g_split, y_split = effective_splits(self._green_split, self._yellow_split)
+        glUniform1f(self._bars_uniforms["uGreenSplit"], g_split)
+        glUniform1f(self._bars_uniforms["uYellowSplit"], y_split)
         glUniform1f(self._bars_uniforms["uBarsAlpha"], float(self._bars_alpha))
         glUniform1i(self._bars_uniforms["uColorMode"], int(self._color_mode))
         glUniform3f(self._bars_uniforms["uColorA"], *self._color_a)
@@ -1323,14 +1326,13 @@ class EqualizerOpenGLThread(threading.Thread):
             self._color_b = tuple(message['value'])
 
         elif message_type == 'set_green_split':
-            # green_split è la soglia inferiore: clamp [0,1] e <= yellow_split.
-            v = min(max(float(message['value']), 0.0), 1.0)
-            self._green_split = min(v, self._yellow_split)
+            # Valore raw (solo clamp [0,1]): il vincolo green <= yellow è
+            # applicato all'uso (effective_splits), così l'ordine dei
+            # messaggi è irrilevante.
+            self._green_split = min(max(float(message['value']), 0.0), 1.0)
 
         elif message_type == 'set_yellow_split':
-            # yellow_split è la soglia superiore: clamp [0,1] e >= green_split.
-            v = min(max(float(message['value']), 0.0), 1.0)
-            self._yellow_split = max(v, self._green_split)
+            self._yellow_split = min(max(float(message['value']), 0.0), 1.0)
 
         elif message_type == 'set_bar_width':
             self._bar_width_frac = float(message['value'])
