@@ -5,6 +5,8 @@ from typing import Optional
 import numpy as np
 import imageio.v2 as imageio
 
+from thread.render_params import sanitize_fps
+
 
 class VideoDecodeThread(threading.Thread):
     """
@@ -50,9 +52,11 @@ class VideoDecodeThread(threading.Thread):
                 produced = 0
                 try:
                     meta = reader.get_meta_data()
-                    fps = meta.get('fps')
-                    if fps and fps > 0:
-                        self.fps = float(fps)
+                    # sanitize_fps: metadati rotti possono riportare inf/nan →
+                    # il pacing sul thread GL dividerebbe per zero.
+                    fps = sanitize_fps(meta.get('fps'))
+                    if fps is not None:
+                        self.fps = fps
                     if self._debug:
                         print(f"Video fps={self.fps}, meta={meta}")
 

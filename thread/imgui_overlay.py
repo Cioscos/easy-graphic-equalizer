@@ -25,7 +25,14 @@ class ImGuiOverlay:
         imgui.create_context()
         # attach_callbacks=False: registriamo noi le callback GLFW in run() (il backend
         # le sovrascriverebbe senza concatenarle alla nostra key_callback).
-        self.impl = GlfwRenderer(window, attach_callbacks=False)
+        try:
+            self.impl = GlfwRenderer(window, attach_callbacks=False)
+        except Exception:
+            # Senza questa coppia il contesto resterebbe orfano (self._imgui_overlay
+            # resta None nel renderer → shutdown() mai chiamato) e si accumulerebbe
+            # a ogni tentativo di avvio.
+            imgui.destroy_context()
+            raise
 
     # --- stato apertura ---
     def is_open(self) -> bool:
@@ -89,7 +96,8 @@ class ImGuiOverlay:
                                            ["Barre", "Radiale", "Oscilloscopio", "Linea/Area"])
                 if changed:
                     self._emit("set_viz_mode", int(idx))
-                changed, val = imgui.slider_float("Trasparenza sfondo", float(r._bg_alpha or 0.0), 0.0, 1.0)
+                # None = opaco per _draw_background: mostra 1.0, non 0.0
+                changed, val = imgui.slider_float("Trasparenza sfondo", float(1.0 if r._bg_alpha is None else r._bg_alpha), 0.0, 1.0)
                 if changed:
                     self._emit("set_alpha", float(val))
                 changed, val = imgui.slider_float("Opacità barre", float(r._bars_alpha), 0.0, 1.0)

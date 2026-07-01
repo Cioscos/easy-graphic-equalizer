@@ -1,4 +1,17 @@
 """Helper puri per i parametri di rendering (testabili senza contesto GL)."""
+import math
+
+
+def sanitize_fps(value) -> float | None:
+    """fps dai metadati video: accetta solo numeri finiti e positivi.
+
+    ffmpeg può riportare inf/nan/0 su file con metadati rotti; un fps non
+    finito produrrebbe un frame-interval pari a 0 e una divisione per zero
+    nel pacing video del thread GL."""
+    if isinstance(value, (int, float)) and not isinstance(value, bool) \
+            and math.isfinite(value) and value > 0:
+        return float(value)
+    return None
 
 
 def effective_splits(green: float, yellow: float) -> tuple[float, float]:

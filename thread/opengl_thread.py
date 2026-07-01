@@ -19,7 +19,7 @@ from thread.video_decode_thread import VideoDecodeThread
 from thread.frame_time_stats import FrameTimeStats
 from thread.imgui_overlay import ImGuiOverlay
 from thread.menu_keys import toggle_key_to_glfw
-from thread.render_params import effective_splits
+from thread.render_params import effective_splits, sanitize_fps
 
 RATE = 44100
 N_FFT = 4096
@@ -557,7 +557,9 @@ class EqualizerOpenGLThread(threading.Thread):
         self._bass_energy = 0.0       # energia bassi dell'ultimo frame (da create_equalizer)
         # Maschera dei bin FFT sotto il cutoff bassi (per l'energia beat)
         _freqs = np.fft.rfftfreq(N_FFT, 1.0 / RATE)
-        self._bass_mask = _freqs < BASS_CUTOFF_HZ
+        # Escludi il bin DC (0 Hz): un offset DC nel segnale catturato gonfia
+        # stabilmente l'energia dei bassi e desensibilizza la beat detection.
+        self._bass_mask = (_freqs > 0) & (_freqs < BASS_CUTOFF_HZ)
 
         # --- Bloom (Blocco 2) ---
         self._bloom_enabled = bool(bloom_enabled)
@@ -1595,6 +1597,7 @@ class EqualizerOpenGLThread(threading.Thread):
             glfw.set_mouse_button_callback(window, impl.mouse_button_callback)
             glfw.set_scroll_callback(window, impl.scroll_callback)
             glfw.set_window_size_callback(window, impl.resize_callback)
+            glfw.set_framebuffer_size_callback(window, self._on_framebuffer_size)
             # Menù chiuso all'avvio → cursore nascosto (visualizzazione pulita).
             glfw.set_input_mode(window, glfw.CURSOR, glfw.CURSOR_HIDDEN)
 
@@ -1766,6 +1769,28 @@ class EqualizerOpenGLThread(threading.Thread):
         mode = glfw.CURSOR_NORMAL if is_open else glfw.CURSOR_HIDDEN
         glfw.set_input_mode(window, glfw.CURSOR, mode)
 
+    def _on_framebuffer_size(self, window, width, height):
+        """Callback GLFW (gira sul thread GL durante poll_events): tiene
+        viewport e FBO del bloom allineati alla dimensione reale del
+        framebuffer (cambio risoluzione/scala DPI a runtime)."""
+        if width <= 0 or height <= 0:
+            return  # finestra minimizzata: non toccare nulla
+        self._fb_width, self._fb_height = width, height
+        glViewport(0, 0, width, height)
+        self._invalidate_bloom_fbos()
+
+    def _invalidate_bloom_fbos(self) -> None:
+        """Libera i FBO bloom (se esistono): verranno ricreati lazy alla
+        nuova dimensione dal prossimo _ensure_bloom_fbos."""
+        if self._bloom_size is None:
+            return
+        try:
+            glDeleteFramebuffers(len(self._bloom_fbos), self._bloom_fbos)
+            glDeleteTextures(len(self._bloom_texs), self._bloom_texs)
+        except Exception:
+            pass
+        self._bloom_fbos, self._bloom_texs, self._bloom_size = [], [], None
+
     def load_texture(self):
         """
         Carica la texture di sfondo da self._bg_image, eliminando prima l'eventuale
@@ -1862,8 +1887,9 @@ class EqualizerOpenGLThread(threading.Thread):
             return
 
         # fps letto live dal thread decoder (default finché i metadati non sono pronti).
-        if self._video_thread is not None and self._video_thread.fps > 0:
-            self._video_frame_interval = 1.0 / self._video_thread.fps
+        fps = sanitize_fps(self._video_thread.fps) if self._video_thread is not None else None
+        if fps is not None:
+            self._video_frame_interval = 1.0 / fps
 
         self._video_time_acc += frame_delta
         if self._video_time_acc < self._video_frame_interval:
