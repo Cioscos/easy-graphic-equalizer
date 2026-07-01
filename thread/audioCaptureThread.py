@@ -9,7 +9,7 @@ RATE = 44100
 
 # Define a thread for capturing audio
 class AudioCaptureThread(threading.Thread):
-    def __init__(self, audio_queue, device, debug=False, channels=2):
+    def __init__(self, audio_queue, device, debug=False, channels=2, on_error=None):
         # daemon=True: su Linux/PulseAudio un source "monitor" può non produrre
         # dati durante il silenzio → record() blocca e stop() non può
         # interromperlo. Il daemon flag garantisce che il processo esca comunque.
@@ -19,6 +19,7 @@ class AudioCaptureThread(threading.Thread):
         self.audio_queue = audio_queue
         self._debug = debug
         self.channels = channels
+        self._on_error = on_error
         if self._debug:
             print("Audio capture thread created")
 
@@ -64,14 +65,26 @@ class AudioCaptureThread(threading.Thread):
                                 pass
                     except Exception as exception:
                         print(f"Error capturing audio: {exception}")
+                        self._notify_error(str(exception))
                         break
         except Exception as exception:
             # recorder() puo' sollevare gia' all'apertura (device scomparso):
             # senza questo try l'eccezione uscirebbe da run() con traceback grezzo.
             print(f"Error opening audio device: {exception}")
+            self._notify_error(str(exception))
 
         if self._debug:
             print("Loop exited")
+
+    def _notify_error(self, message: str) -> None:
+        # Solo per morti impreviste: uno stop volontario non e' un errore.
+        # Il callback gira SU QUESTO thread: chi lo riceve deve marshallare
+        # (la GUI usa un segnale Qt).
+        if self._running and self._on_error is not None:
+            try:
+                self._on_error(message)
+            except Exception:
+                pass
 
     def stop(self):
         self._running = False

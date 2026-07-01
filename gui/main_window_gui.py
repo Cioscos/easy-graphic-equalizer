@@ -85,6 +85,9 @@ class AudioCaptureGUI(QMainWindow):
     # GLFW, il segnale lo marshalla sul thread GUI (connessione queued).
     _opengl_closed = Signal()
     _setting_changed = Signal(dict)
+    # Emesso quando la cattura audio muore per errore: il callback parte sul
+    # thread di cattura, il segnale lo marshalla sul thread GUI.
+    _audio_error = Signal(str)
 
     def __init__(self):
         super().__init__()
@@ -183,6 +186,7 @@ class AudioCaptureGUI(QMainWindow):
         self.nav.setCurrentRow(0)
         self._opengl_closed.connect(self._on_opengl_closed)
         self._setting_changed.connect(self._on_setting_changed)
+        self._audio_error.connect(self._on_audio_error)
 
         # Auto-load dell'ultimo profilo usato (se ancora presente). Protetto:
         # un profilo corrotto su disco non deve impedire l'avvio — l'app parte
@@ -670,7 +674,10 @@ class AudioCaptureGUI(QMainWindow):
                         self.audio_queue.get_nowait()
                     except queue.Empty:
                         break
-            self.audio_thread = AudioCaptureThread(self.audio_queue, device=device)
+            self.audio_thread = AudioCaptureThread(
+                self.audio_queue, device=device,
+                on_error=lambda msg: self._audio_error.emit(msg),
+            )
             self.audio_thread.start()
             self.last_device_selected = device
 
@@ -1035,6 +1042,18 @@ class AudioCaptureGUI(QMainWindow):
             thread.join(timeout=2.0)
             self.equalizer_opengl_thread = None
         self._set_fullscreen_button_running(False)
+
+    def _on_audio_error(self, message: str) -> None:
+        """Slot (thread GUI): la cattura audio è morta. Azzera lo stato così
+        riselezionare lo STESSO device fa ripartire la cattura (senza questo
+        reset la guardia last_device_selected renderebbe il click un no-op)."""
+        self.audio_thread = None
+        self.last_device_selected = None
+        QMessageBox.warning(
+            self, "Audio",
+            f"La cattura audio si è interrotta: {message}\n"
+            "Riseleziona il dispositivo per riprovare.",
+        )
 
     def _on_setting_changed(self, message: dict) -> None:
         """
