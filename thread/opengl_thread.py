@@ -1623,7 +1623,15 @@ class EqualizerOpenGLThread(threading.Thread):
                 # Process messages from the control queue
                 while not self._control_queue.empty():
                     message = self._control_queue.get(block=False)
-                    self.process_control_message(message)
+                    try:
+                        self.process_control_message(message)
+                    except Exception as exc:
+                        # Un messaggio malformato (es. set_image con immagine
+                        # corrotta: PIL decodifica lazy e il file esplode QUI,
+                        # non alla Image.open della GUI) non deve uccidere il
+                        # renderer: scarta il messaggio e continua.
+                        mtype = message.get('type') if isinstance(message, dict) else repr(message)
+                        print(f"Errore nel messaggio di controllo {mtype}: {exc}")
 
                 # 1) Svuota TUTTA la coda audio nel ring buffer: tenendo solo gli ultimi
                 #    N_FFT frame, analizziamo sempre l'audio più recente (niente backlog).
