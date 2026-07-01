@@ -21,8 +21,10 @@ class BackgroundFilepickerFrame(QWidget):
         header_name: str = "BackgroundFilepickerFrame",
         placeholder_text: Optional[str] = None,
         apply_command: Optional[Callable] = None,
+        start_dir: Optional[str] = None,
     ):
         super().__init__(parent)
+        self._start_dir = start_dir
 
         layout = QGridLayout(self)
         layout.setContentsMargins(4, 4, 4, 4)
@@ -47,7 +49,9 @@ class BackgroundFilepickerFrame(QWidget):
         layout.addWidget(self.apply_button, 2, 0, 1, 2)
 
     def open_file_dialog(self) -> None:
-        start_dir = "resources/bg" if os.path.isdir("resources/bg") else ""
+        # Dir iniettata dal chiamante (ResourceManager): il path relativo alla
+        # CWD era sbagliato nel frozen build e con CWD ≠ radice del repo.
+        start_dir = self._start_dir if self._start_dir and os.path.isdir(self._start_dir) else ""
         filename, _ = QFileDialog.getOpenFileName(
             self,
             "Select a File",

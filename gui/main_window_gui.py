@@ -373,6 +373,7 @@ class AudioCaptureGUI(QMainWindow):
             header_name='Sfondo (immagine o video):',
             placeholder_text='Percorso file...',
             apply_command=self.apply_bg_command,
+            start_dir=str(self.resource_manager.base_path / "bg"),
         )
         self.alpha_slider = SliderCustomFrame(
             header_name='Trasparenza sfondo:',
