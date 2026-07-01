@@ -721,16 +721,22 @@ class AudioCaptureGUI(QMainWindow):
             self._apply_image_background(filename)
 
     def _apply_image_background(self, filename: str):
-        """Carica un'immagine come sfondo del renderer OpenGL."""
+        """Carica un'immagine come sfondo del renderer OpenGL. Lo stato viene
+        mutato solo a caricamento riuscito: un fallimento non deve cancellare
+        un eventuale sfondo video attivo (che il renderer continua a mostrare,
+        e che «Salva» deve continuare a persistere)."""
         try:
-            self.bg_video_path = None  # torna alla modalità immagine
-            self.bg_img = Image.open(filename)
-            self.bg_image_path = filename
-            self.update_bg_opengl(self.bg_img)
+            img = Image.open(filename)
         except FileNotFoundError:
             QMessageBox.critical(self, 'Errore', 'File non trovato!')
+            return
         except Exception as e:
             QMessageBox.critical(self, 'Errore', f"Errore nel caricamento dell'immagine: {e}")
+            return
+        self.bg_video_path = None  # torna alla modalità immagine
+        self.bg_img = img
+        self.bg_image_path = filename
+        self.update_bg_opengl(self.bg_img)
 
     def _apply_video_background(self, filename: str):
         """Seleziona un video come sfondo: se il fullscreen è aperto parte subito."""
@@ -1339,16 +1345,23 @@ class AudioCaptureGUI(QMainWindow):
             if self.equalizer_opengl_thread:
                 self.equalizer_control_queue.put({"type": "set_video", "value": path})
         else:
-            # immagine, oppure video mancante → fallback immagine
-            self.bg_video_path = None
-            self.bg_image_path = path
-            try:
-                self.bg_img = Image.open(path)
-            except Exception:
-                ok = False
-            self.file_picker.set_filename(path)
-            if self.equalizer_opengl_thread:
-                self.equalizer_control_queue.put({"type": "set_image", "value": self.bg_img})
+            # immagine, oppure video mancante → fallback immagine. Stato mutato
+            # solo se l'apertura riesce: mai persistere un path che non si apre.
+            img = None
+            if path:
+                try:
+                    img = Image.open(path)
+                except Exception:
+                    ok = False
+            else:
+                ok = False   # resolve_bg_ref: manca anche l'asset predefinito
+            if img is not None:
+                self.bg_video_path = None
+                self.bg_img = img
+                self.bg_image_path = path
+                self.file_picker.set_filename(path)
+                if self.equalizer_opengl_thread:
+                    self.equalizer_control_queue.put({"type": "set_image", "value": self.bg_img})
 
         if not ok:
             ref_desc = ref.get("value") or ref.get("name") or str(ref)
