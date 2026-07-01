@@ -56,15 +56,20 @@ class ProfileBarFrame(QWidget):
         self._on_select(None if text == PLACEHOLDER else (text or None))
 
     def set_profiles(self, names: List[str], selected: Optional[str]) -> None:
-        """Ripopola la combo. Blocca i segnali: NON scatena on_select."""
+        """Ripopola la combo. Blocca i segnali: NON scatena on_select. Senza un
+        `selected` valido nessuna voce risulta scelta (indice -1): il profilo
+        mostrato è sempre e solo uno realmente caricato — mai un profilo
+        "fantasma" che «Salva» sovrascriverebbe con impostazioni non sue."""
         self._combo.blockSignals(True)
         self._combo.clear()
         if names:
             self._combo.addItems(names)
+            if selected and selected in names:
+                self._combo.setCurrentText(selected)
+            else:
+                self._combo.setCurrentIndex(-1)
         else:
             self._combo.addItem(PLACEHOLDER)
-        if selected and selected in names:
-            self._combo.setCurrentText(selected)
         self._combo.blockSignals(False)
 
     def current_name(self) -> Optional[str]:
