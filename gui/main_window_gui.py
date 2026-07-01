@@ -240,7 +240,15 @@ class AudioCaptureGUI(QMainWindow):
         self.device_listbox.setFont(font_body())
         self.device_listbox.setMaximumHeight(120)
         v.addWidget(self.device_listbox)
-        asyncio.run(self.load_devices())
+        try:
+            asyncio.run(self.load_devices())
+        except Exception as e:
+            # es. Linux senza PulseAudio/PipeWire: soundcard solleva qui.
+            QMessageBox.critical(
+                self, "Errore audio",
+                f"Impossibile enumerare i dispositivi audio: {e}\n"
+                "Su Linux servono PulseAudio o PipeWire attivi.",
+            )
         # Singolo clic per selezionare (più scopribile); il doppio clic resta valido.
         self.device_listbox.itemClicked.connect(self.on_device_selected)
         self.device_listbox.itemDoubleClicked.connect(self.on_device_selected)
@@ -651,7 +659,14 @@ class AudioCaptureGUI(QMainWindow):
 
     def get_available_monitors(self) -> list[str]:
         if not glfw.init():
-            raise Exception("GLFW initialization failed")
+            # Niente raise: l'app deve mostrarsi comunque (magari l'utente vuole
+            # solo gestire i profili). Il fullscreen resterà non avviabile.
+            QMessageBox.critical(
+                self, "Errore",
+                "Inizializzazione GLFW fallita: nessun display OpenGL disponibile.\n"
+                "La visualizzazione fullscreen non sarà utilizzabile.",
+            )
+            return []
         monitors = glfw.get_monitors()
         monitors_name = [
             f"{idx + 1}. {glfw.get_monitor_name(monitor).decode('utf-8')}"
