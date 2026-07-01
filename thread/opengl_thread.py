@@ -595,6 +595,7 @@ class EqualizerOpenGLThread(threading.Thread):
         self._bloom_fbos = []      # 2 FBO ping-pong
         self._bloom_texs = []      # 2 texture half-res (GL_RGB16F)
         self._bloom_size = None    # (w, h) half-res; None = non ancora creati
+        self._bloom_unsupported = False  # True se il driver rifiuta l'FBO RGB16F: non ritentare
         self._strip_program = None
         self._strip_vao = None
         self._strip_vbo = None
@@ -975,7 +976,12 @@ class EqualizerOpenGLThread(threading.Thread):
         """
         Crea (lazy) i due FBO ping-pong half-res (GL_RGB16F) per il bloom.
         Ritorna True se disponibili. Richiede dimensione framebuffer nota.
+        Su framebuffer incompleto (GL_RGB16F non è color-renderable obbligatorio
+        in GL 3.3) libera il creato e marca il bloom come non disponibile: senza
+        il flag il tentativo — e il leak — si ripeterebbe a ogni frame.
         """
+        if self._bloom_unsupported:
+            return False
         if self._bloom_size is not None:
             return True
         w = max(1, int(self._fb_width) // 2)
@@ -994,6 +1000,11 @@ class EqualizerOpenGLThread(threading.Thread):
             glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, tex, 0)
             if glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE:
                 glBindFramebuffer(GL_FRAMEBUFFER, 0)
+                all_fbos, all_texs = fbos + [fbo], texs + [tex]
+                glDeleteFramebuffers(len(all_fbos), all_fbos)
+                glDeleteTextures(len(all_texs), all_texs)
+                self._bloom_unsupported = True
+                print("[GL] Bloom non disponibile: framebuffer RGB16F incompleto")
                 return False
             fbos.append(fbo)
             texs.append(tex)
