@@ -15,6 +15,16 @@ ciascun finding:
 
 Le righe citate si riferiscono allo stato del repo al commit `b507f36`.
 
+> **Esito remediation (branch `bugfix/audit-2026-07`):** tutti i finding
+> CRITICI e MEDI sono stati risolti; dei MINORI sono risolti tutti tranne
+> m8 (quantizzazione slider float — innocua e convergente), m13 (join decoder
+> con timeout — richiede I/O patologico, mitigato dal daemon flag), m17 (API
+> GLFW su thread worker — limite architetturale documentato in CLAUDE.md),
+> m18 (contratto di get_window_for_fft — documentato nel docstring) e m19
+> (`clear_video` senza sender — affordance UI fuori scope). m24 è risolto
+> dalla suite di test estesa. Dettagli per-fix nel piano
+> `docs/superpowers/plans/2026-07-02-bonifica-bug-audit.md`.
+
 ---
 
 ## CRITICI — crash, freeze della GUI, app che non parte
