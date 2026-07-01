@@ -6,6 +6,7 @@ tollerante fra versioni, i riferimenti-sfondo portabili con safe fallback e lo
 store su disco (ProfileStore).
 """
 import json
+import math
 import os
 import re
 import shutil
@@ -61,6 +62,91 @@ DEFAULTS = {
 _INVALID_NAME = re.compile(r"[^\w\-. ]", re.UNICODE)
 
 
+def _clamp(v, lo, hi):
+    return max(lo, min(hi, v))
+
+
+def _is_number(v) -> bool:
+    return isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v)
+
+
+def _valid_float(lo: float, hi: float):
+    def check(v, default):
+        return _clamp(float(v), lo, hi) if _is_number(v) else default
+    return check
+
+
+def _valid_int(lo: int, hi: int):
+    def check(v, default):
+        return int(_clamp(int(round(v)), lo, hi)) if _is_number(v) else default
+    return check
+
+
+def _valid_bool(v, default):
+    if isinstance(v, bool):
+        return v
+    if isinstance(v, (int, float)):
+        return bool(v)
+    return default
+
+
+def _valid_rgb(v, default):
+    if isinstance(v, (list, tuple)) and len(v) == 3 and all(_is_number(c) for c in v):
+        return [_clamp(float(c), 0.0, 1.0) for c in v]
+    return default
+
+
+def _valid_background(v, default):
+    if isinstance(v, dict) and v.get("type") in ("image", "video") and isinstance(v.get("ref"), dict):
+        return v
+    return default
+
+
+def _valid_str(v, default):
+    return v if isinstance(v, str) and v else default
+
+
+# Validatori per chiave: tipo sbagliato → default, fuori range → clamp.
+# I range combaciano con gli slider della GUI (gui/main_window_gui.py) e del
+# menù in-window (thread/imgui_overlay.py).
+_VALIDATORS = {
+    "noise_threshold": _valid_float(0.0, 1.0),
+    "n_bands": _valid_int(1, 100),
+    "db_floor": _valid_float(-90.0, -25.0),
+    "db_ceiling": _valid_float(-20.0, 6.0),
+    "attack_tau": _valid_float(0.001, 0.1),
+    "release_tau": _valid_float(0.02, 1.0),
+    "tilt_db_per_oct": _valid_float(-6.0, 6.0),
+    "viz_mode": _valid_int(0, 3),
+    "bg_alpha": _valid_float(0.0, 1.0),
+    "bars_alpha": _valid_float(0.0, 1.0),
+    "background": _valid_background,
+    "color_mode": _valid_int(0, 3),
+    "color_a": _valid_rgb,
+    "color_b": _valid_rgb,
+    "green_split": _valid_float(0.0, 1.0),
+    "yellow_split": _valid_float(0.0, 1.0),
+    "bar_width": _valid_float(0.1, 1.0),
+    "rounded": _valid_bool,
+    "anchor_center": _valid_bool,
+    "band_symmetric": _valid_bool,
+    "inner_radius": _valid_float(0.0, 0.8),
+    "line_thickness": _valid_float(0.002, 0.06),
+    "fill": _valid_bool,
+    "osc_mirror": _valid_bool,
+    "osc_smoothing": _valid_float(0.0, 1.0),
+    "peakcap_enabled": _valid_bool,
+    "peakcap_color": _valid_rgb,
+    "peakcap_hold": _valid_float(0.0, 2.0),
+    "peakcap_fall": _valid_float(0.1, 3.0),
+    "bloom_enabled": _valid_bool,
+    "bloom_intensity": _valid_float(0.0, 3.0),
+    "beat_enabled": _valid_bool,
+    "beat_intensity": _valid_float(0.0, 0.3),
+    "beat_sensitivity": _valid_float(1.05, 3.0),
+}
+
+
 def serialize(settings: dict) -> dict:
     """Rende il dict JSON-safe (tuple→list) sull'insieme di chiavi noto. No validazione range."""
     out = {}
@@ -73,13 +159,20 @@ def serialize(settings: dict) -> dict:
 
 
 def deserialize(raw: dict) -> dict:
-    """Riempie le chiavi mancanti con i default e ignora le sconosciute.
-
-    Tollerante fra versioni di profilo. Solleva ValueError se `raw` non è un dict.
+    """Riempie le chiavi mancanti con i default, valida tipo e range di quelle
+    presenti (tipo sbagliato → default; fuori range → clamp) e ignora le
+    sconosciute. Tollerante fra versioni. Solleva ValueError se raw non è dict.
     """
     if not isinstance(raw, dict):
         raise ValueError("settings non è un oggetto JSON")
-    return {key: raw.get(key, default) for key, default in DEFAULTS.items()}
+    out = {}
+    for key, default in DEFAULTS.items():
+        if key in raw:
+            validator = _VALIDATORS.get(key)
+            out[key] = validator(raw[key], default) if validator else raw[key]
+        else:
+            out[key] = default
+    return out
 
 
 def sanitize_name(name: str) -> str:

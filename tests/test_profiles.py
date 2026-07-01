@@ -130,6 +130,37 @@ def test_store_import_invalid_raises():
     raise AssertionError("import_file doveva fallire su JSON non valido")
 
 
+def test_deserialize_wrong_types_fall_back_to_defaults():
+    out = profiles.deserialize({
+        "viz_mode": None,          # int atteso
+        "n_bands": "x",            # int atteso
+        "bg_alpha": "0.5",         # float atteso (stringa non accettata)
+        "rounded": "sì",           # bool atteso
+        "color_a": [1, 2],         # rgb: servono 3 componenti
+        "peakcap_color": "bianco", # rgb atteso
+        "background": "non-dict",  # dict atteso
+        "attack_tau": float("nan"),  # float non finito
+    })
+    for key in ("viz_mode", "n_bands", "bg_alpha", "rounded", "color_a",
+                "peakcap_color", "background", "attack_tau"):
+        assert out[key] == profiles.DEFAULTS[key], (key, out[key])
+
+
+def test_deserialize_out_of_range_clamped():
+    out = profiles.deserialize({
+        "bar_width": 5.0,           # range [0.1, 1.0]
+        "n_bands": 1000,            # range [1, 100]
+        "db_floor": -200,           # range [-90, -25]
+        "color_b": [2.0, -1.0, 0.5],
+        "beat_sensitivity": 0.0,    # range [1.05, 3.0]
+    })
+    assert out["bar_width"] == 1.0
+    assert out["n_bands"] == 100
+    assert out["db_floor"] == -90.0
+    assert out["color_b"] == [1.0, 0.0, 0.5]
+    assert out["beat_sensitivity"] == 1.05
+
+
 def test_write_envelope_atomic_no_tmp_leftovers():
     store, tmp = _fresh_store()
     store.save("alfa", dict(profiles.DEFAULTS))
@@ -166,6 +197,8 @@ def main():
         test_store_import_invalid_raises()
         test_write_envelope_atomic_no_tmp_leftovers()
         test_load_truncated_profile_raises()
+        test_deserialize_wrong_types_fall_back_to_defaults()
+        test_deserialize_out_of_range_clamped()
         print("OK")
     finally:
         for t in _TMPDIRS:

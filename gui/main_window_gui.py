@@ -1311,10 +1311,10 @@ class AudioCaptureGUI(QMainWindow):
             return
         try:
             settings = self._profile_store.load(name)
+            self._apply_profile(settings)
         except Exception as e:
             QMessageBox.warning(self, "Profilo", f"Impossibile caricare il profilo: {e}")
             return
-        self._apply_profile(settings)
         self._profile_store.set_last(name)
 
     def _on_profile_save(self) -> None:
@@ -1354,11 +1354,11 @@ class AudioCaptureGUI(QMainWindow):
             return
         try:
             name = self._profile_store.import_file(path)
+            self._refresh_profile_bar(selected=name)
+            self._apply_profile(self._profile_store.load(name))
         except Exception as e:
             QMessageBox.warning(self, "Importa profilo", f"File non valido: {e}")
             return
-        self._refresh_profile_bar(selected=name)
-        self._apply_profile(self._profile_store.load(name))
         self._profile_store.set_last(name)
 
     def _on_profile_export(self) -> None:
