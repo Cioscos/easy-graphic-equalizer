@@ -656,10 +656,20 @@ class AudioCaptureGUI(QMainWindow):
         device = self.devices[row]
 
         if self.last_device_selected != device:
-            self.audio_queue = None
             self.stop_audio_thread()
 
-            self.audio_queue = queue.Queue(maxsize=MAX_QUEUE_SIZE)
+            # Riusa la STESSA coda: il renderer in esecuzione ne tiene il
+            # riferimento ricevuto alla costruzione — ricrearla lo lascerebbe
+            # per sempre su una coda morta (barre congelate). Drena il residuo
+            # del vecchio device.
+            if self.audio_queue is None:
+                self.audio_queue = queue.Queue(maxsize=MAX_QUEUE_SIZE)
+            else:
+                while True:
+                    try:
+                        self.audio_queue.get_nowait()
+                    except queue.Empty:
+                        break
             self.audio_thread = AudioCaptureThread(self.audio_queue, device=device)
             self.audio_thread.start()
             self.last_device_selected = device
