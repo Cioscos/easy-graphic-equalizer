@@ -37,7 +37,7 @@ from gui.optionmenu_frame import OptionMenuCustomFrame
 from gui.background_filepicker_frame import BackgroundFilepickerFrame
 from gui.help_window import HelpWindow
 from gui.animated_button import AnimatedButton
-from gui.color_picker_frame import ColorPickerFrame
+from gui.color_picker_frame import ColorPickerFrame, rgb01_to_hex
 from gui.theme import (
     font_button, font_label, font_section, font_body,
     theme_kwargs,
@@ -488,21 +488,22 @@ class AudioCaptureGUI(QMainWindow):
             command=self.update_yellow_split,
             initial_value=self.bars_yellow_split,
         )
-        # Tinta unica: un colore
+        # Tinta unica e Gradiente condividono color_a: gli swatch partono
+        # dallo stato self.* (unica fonte di verità), non da esadecimali fissi.
         self.bars_solid_color = ColorPickerFrame(
             header_name='Colore barre:',
-            initial_color='#22d36a',
+            initial_color=rgb01_to_hex(self.bars_color_a),
             command=self.update_color_a,
         )
         # Gradiente: due colori
         self.bars_grad_base = ColorPickerFrame(
             header_name='Colore base:',
-            initial_color='#3b6bff',
+            initial_color=rgb01_to_hex(self.bars_color_a),
             command=self.update_color_a,
         )
         self.bars_grad_top = ColorPickerFrame(
             header_name='Colore cima:',
-            initial_color='#ff3bd0',
+            initial_color=rgb01_to_hex(self.bars_color_b),
             command=self.update_color_b,
         )
         return self._page(
@@ -820,6 +821,10 @@ class AudioCaptureGUI(QMainWindow):
 
     def update_color_a(self, rgb):
         self.bars_color_a = rgb
+        # Tinta unica e Gradiente condividono color_a: tieni allineati entrambi
+        # gli swatch (set_color non riscatena la callback → niente loop).
+        self.bars_solid_color.set_color(rgb)
+        self.bars_grad_base.set_color(rgb)
         if self.equalizer_opengl_thread:
             self.equalizer_control_queue.put({"type": "set_color_a", "value": rgb})
 

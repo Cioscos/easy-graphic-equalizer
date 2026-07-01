@@ -107,6 +107,8 @@ class AnimatedButton(QPushButton):
 
     # --- Colori derivati -----------------------------------------------------
     def _hover_brush(self) -> QColor:
+        if self._hover_color_override is not None:
+            return QColor(self._hover_color_override)
         return self._base_color.lighter(115)
 
     def _press_brush(self) -> QColor:
@@ -209,7 +211,8 @@ class AnimatedButton(QPushButton):
         """Aggiorna i colori base del pulsante mantenendo le animazioni."""
         self._base_color = QColor(fg_color)
         self._hover_color_override = QColor(hover_color) if hover_color else None
-        # Applica subito il colore base se non siamo in hover.
-        if not self.underMouse():
-            self._color_anim.stop()
-            self._set_bg(QColor(self._base_color))
+        # Applica SUBITO il nuovo colore: verso l'hover se il mouse è sopra
+        # (caso tipico: il click sul footer che alterna Avvia/Ferma avviene
+        # col mouse sul bottone), altrimenti verso il base.
+        self._color_anim.stop()
+        self._set_bg(QColor(self._hover_brush() if self.underMouse() else self._base_color))
