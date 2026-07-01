@@ -672,8 +672,11 @@ class AudioCaptureGUI(QMainWindow):
     def stop_audio_thread(self):
         if self.audio_thread:
             self.audio_thread.stop()
-            while self.audio_thread.is_alive():
-                self.audio_thread.join(timeout=0.1)
+            # Join limitato: un record() bloccato (Linux, silenzio di sistema)
+            # non deve congelare la GUI. Il thread è daemon: se non esce qui,
+            # muore comunque col processo.
+            self.audio_thread.join(timeout=2.0)
+            self.audio_thread = None
 
     # --- Sfondo --------------------------------------------------------------
     def apply_bg_command(self):
@@ -1390,8 +1393,7 @@ class AudioCaptureGUI(QMainWindow):
         """
         if self.audio_thread:
             self.audio_thread.stop()
-            while self.audio_thread.is_alive():
-                self.audio_thread.join(timeout=0.1)
+            self.audio_thread.join(timeout=2.0)
 
         if self.equalizer_opengl_thread:
             self.equalizer_opengl_thread.stop()
