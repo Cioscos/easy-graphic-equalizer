@@ -8,7 +8,7 @@ from PIL import Image
 import glfw
 import qdarktheme
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtGui import QIcon, QAction, QActionGroup
 from PySide6.QtWidgets import (
     QFileDialog,
@@ -184,11 +184,19 @@ class AudioCaptureGUI(QMainWindow):
         self._opengl_closed.connect(self._on_opengl_closed)
         self._setting_changed.connect(self._on_setting_changed)
 
-        # Auto-load dell'ultimo profilo usato (se ancora presente)
-        last = self._profile_store.get_last()
-        if last and last in self._profile_store.list_names():
-            self.profile_bar.set_profiles(self._profile_store.list_names(), last)
-            self._apply_profile(self._profile_store.load(last))
+        # Auto-load dell'ultimo profilo usato (se ancora presente). Protetto:
+        # un profilo corrotto su disco non deve impedire l'avvio — l'app parte
+        # coi default e segnala il problema senza cancellare il file.
+        last = None
+        try:
+            last = self._profile_store.get_last()
+            if last and last in self._profile_store.list_names():
+                self.profile_bar.set_profiles(self._profile_store.list_names(), last)
+                self._apply_profile(self._profile_store.load(last))
+        except Exception as e:
+            msg = (f"Impossibile caricare l'ultimo profilo «{last}»: {e}\n"
+                   "Avvio con le impostazioni predefinite.")
+            QTimer.singleShot(0, lambda: QMessageBox.warning(self, "Profilo", msg))
 
     # --- Costruzione pannelli ------------------------------------------------
     def _build_menu_bar(self):

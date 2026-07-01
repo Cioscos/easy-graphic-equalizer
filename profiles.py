@@ -142,6 +142,16 @@ def _default_config_dir() -> Path:
     return Path(base) / "sound-wave"
 
 
+def _atomic_write_text(dest: Path, text: str) -> None:
+    """Scrittura atomica: file temporaneo nella stessa directory + os.replace.
+
+    Un kill/blackout a metà scrittura non può lasciare il file di destinazione
+    troncato (os.replace è atomico sullo stesso filesystem)."""
+    tmp = dest.with_name(dest.name + ".tmp")
+    tmp.write_text(text, encoding="utf-8")
+    os.replace(tmp, dest)
+
+
 class ProfileStore:
     """Gestisce i profili su disco: un file JSON per profilo + un puntatore last_profile.
 
@@ -176,8 +186,8 @@ class ProfileStore:
 
     def write_envelope(self, settings: dict, dest_path) -> None:
         envelope = {"app": APP_TAG, "version": CURRENT_VERSION, "settings": serialize(settings)}
-        Path(dest_path).write_text(
-            json.dumps(envelope, indent=2, ensure_ascii=False), encoding="utf-8"
+        _atomic_write_text(
+            Path(dest_path), json.dumps(envelope, indent=2, ensure_ascii=False)
         )
 
     def import_file(self, src_path) -> str:
@@ -200,6 +210,6 @@ class ProfileStore:
             return None
 
     def set_last(self, name: str) -> None:
-        self._settings_file.write_text(
-            json.dumps({"last_profile": name}, ensure_ascii=False), encoding="utf-8"
+        _atomic_write_text(
+            self._settings_file, json.dumps({"last_profile": name}, ensure_ascii=False)
         )
