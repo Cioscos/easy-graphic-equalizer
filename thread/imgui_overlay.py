@@ -9,6 +9,7 @@ import glfw
 from imgui_bundle import imgui
 from imgui_bundle.python_backends.glfw_backend import GlfwRenderer
 
+from profiles import _default_config_dir
 from thread.menu_keys import TOGGLE_KEY_NAMES
 
 
@@ -23,6 +24,14 @@ class ImGuiOverlay:
 
         # Il contesto ImGui va creato PRIMA del backend (altrimenti RuntimeError).
         imgui.create_context()
+        # Persisti il layout del menù nella config dir dell'app: di default
+        # ImGui scrive "imgui.ini" nella CWD, sporcando la dir di lavoro.
+        try:
+            ini_dir = _default_config_dir()
+            ini_dir.mkdir(parents=True, exist_ok=True)
+            imgui.get_io().set_ini_filename(str(ini_dir / "imgui.ini"))
+        except Exception:
+            imgui.get_io().set_ini_filename(None)  # meglio nessuna persistenza che una CWD sporca
         # attach_callbacks=False: registriamo noi le callback GLFW in run() (il backend
         # le sovrascriverebbe senza concatenarle alla nostra key_callback).
         try:
