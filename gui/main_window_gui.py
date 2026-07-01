@@ -1368,8 +1368,17 @@ class AudioCaptureGUI(QMainWindow):
         name, accepted = QInputDialog.getText(self, "Salva profilo", "Nome del profilo:")
         if not accepted or not name.strip():
             return
-        self._profile_store.save(name, self._collect_profile())
         saved = profiles.sanitize_name(name)
+        # Il confronto va fatto sul nome SANITIZZATO: nomi diversi possono
+        # collidere sullo stesso file (es. "a/b" → "a_b").
+        if saved in self._profile_store.list_names():
+            confirm = QMessageBox.question(
+                self, "Salva profilo",
+                f"Il profilo «{saved}» esiste già. Sovrascriverlo?",
+            )
+            if confirm != QMessageBox.StandardButton.Yes:
+                return
+        self._profile_store.save(name, self._collect_profile())
         self._refresh_profile_bar(selected=saved)
         self._profile_store.set_last(saved)
 
