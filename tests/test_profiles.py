@@ -161,6 +161,15 @@ def test_deserialize_out_of_range_clamped():
     assert out["beat_sensitivity"] == 1.05
 
 
+def test_menu_toggle_key_roundtrip():
+    s = dict(profiles.DEFAULTS)
+    s["menu_toggle_key"] = "M"
+    out = profiles.deserialize(profiles.serialize(s))
+    assert out.get("menu_toggle_key") == "M", out.get("menu_toggle_key")
+    # tipo sbagliato → default
+    assert profiles.deserialize({"menu_toggle_key": 42})["menu_toggle_key"] == "F1"
+
+
 def test_write_envelope_atomic_no_tmp_leftovers():
     store, tmp = _fresh_store()
     store.save("alfa", dict(profiles.DEFAULTS))
@@ -199,6 +208,7 @@ def main():
         test_load_truncated_profile_raises()
         test_deserialize_wrong_types_fall_back_to_defaults()
         test_deserialize_out_of_range_clamped()
+        test_menu_toggle_key_roundtrip()
         print("OK")
     finally:
         for t in _TMPDIRS:

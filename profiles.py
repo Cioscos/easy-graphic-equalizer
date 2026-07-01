@@ -33,6 +33,7 @@ DEFAULTS = {
     "viz_mode": 0,
     "bg_alpha": 0.5,
     "bars_alpha": 1.0,
+    "menu_toggle_key": "F1",
     "background": {"type": "image", "ref": {"kind": "resource", "name": DEFAULT_BG_NAME}},
     "color_mode": 0,
     "color_a": [0.231, 0.420, 1.0],
@@ -120,6 +121,10 @@ _VALIDATORS = {
     "viz_mode": _valid_int(0, 3),
     "bg_alpha": _valid_float(0.0, 1.0),
     "bars_alpha": _valid_float(0.0, 1.0),
+    # Solo type-check: la validazione di appartenenza a TOGGLE_KEY_NAMES resta
+    # al renderer (toggle_key_to_glfw ha il fallback F1) — questo modulo deve
+    # restare puro, senza importare glfw.
+    "menu_toggle_key": _valid_str,
     "background": _valid_background,
     "color_mode": _valid_int(0, 3),
     "color_a": _valid_rgb,
