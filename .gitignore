@@ -22,3 +22,7 @@ dist/
 CLAUDE.md
 .claude/
 .superpowers/
+
+# Layout ImGui (a runtime è reindirizzato alla config dir; questo copre
+# eventuali file creati da build vecchie)
+imgui.ini

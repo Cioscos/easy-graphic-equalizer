@@ -9,6 +9,7 @@ import glfw
 from imgui_bundle import imgui
 from imgui_bundle.python_backends.glfw_backend import GlfwRenderer
 
+from profiles import _default_config_dir
 from thread.menu_keys import TOGGLE_KEY_NAMES
 
 
@@ -23,9 +24,24 @@ class ImGuiOverlay:
 
         # Il contesto ImGui va creato PRIMA del backend (altrimenti RuntimeError).
         imgui.create_context()
+        # Persisti il layout del menù nella config dir dell'app: di default
+        # ImGui scrive "imgui.ini" nella CWD, sporcando la dir di lavoro.
+        try:
+            ini_dir = _default_config_dir()
+            ini_dir.mkdir(parents=True, exist_ok=True)
+            imgui.get_io().set_ini_filename(str(ini_dir / "imgui.ini"))
+        except Exception:
+            imgui.get_io().set_ini_filename(None)  # meglio nessuna persistenza che una CWD sporca
         # attach_callbacks=False: registriamo noi le callback GLFW in run() (il backend
         # le sovrascriverebbe senza concatenarle alla nostra key_callback).
-        self.impl = GlfwRenderer(window, attach_callbacks=False)
+        try:
+            self.impl = GlfwRenderer(window, attach_callbacks=False)
+        except Exception:
+            # Senza questa coppia il contesto resterebbe orfano (self._imgui_overlay
+            # resta None nel renderer → shutdown() mai chiamato) e si accumulerebbe
+            # a ogni tentativo di avvio.
+            imgui.destroy_context()
+            raise
 
     # --- stato apertura ---
     def is_open(self) -> bool:
@@ -89,7 +105,8 @@ class ImGuiOverlay:
                                            ["Barre", "Radiale", "Oscilloscopio", "Linea/Area"])
                 if changed:
                     self._emit("set_viz_mode", int(idx))
-                changed, val = imgui.slider_float("Trasparenza sfondo", float(r._bg_alpha or 0.0), 0.0, 1.0)
+                # None = opaco per _draw_background: mostra 1.0, non 0.0
+                changed, val = imgui.slider_float("Trasparenza sfondo", float(1.0 if r._bg_alpha is None else r._bg_alpha), 0.0, 1.0)
                 if changed:
                     self._emit("set_alpha", float(val))
                 changed, val = imgui.slider_float("Opacità barre", float(r._bars_alpha), 0.0, 1.0)

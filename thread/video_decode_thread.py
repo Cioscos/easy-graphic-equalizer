@@ -5,6 +5,8 @@ from typing import Optional
 import numpy as np
 import imageio.v2 as imageio
 
+from thread.render_params import sanitize_fps
+
 
 class VideoDecodeThread(threading.Thread):
     """
@@ -47,11 +49,14 @@ class VideoDecodeThread(threading.Thread):
         try:
             while not self.stop_event.is_set():
                 reader = imageio.get_reader(self._path)
+                produced = 0
                 try:
                     meta = reader.get_meta_data()
-                    fps = meta.get('fps')
-                    if fps and fps > 0:
-                        self.fps = float(fps)
+                    # sanitize_fps: metadati rotti possono riportare inf/nan →
+                    # il pacing sul thread GL dividerebbe per zero.
+                    fps = sanitize_fps(meta.get('fps'))
+                    if fps is not None:
+                        self.fps = fps
                     if self._debug:
                         print(f"Video fps={self.fps}, meta={meta}")
 
@@ -63,11 +68,18 @@ class VideoDecodeThread(threading.Thread):
                         if frame.dtype != np.uint8 or not frame.flags["C_CONTIGUOUS"]:
                             frame = np.ascontiguousarray(frame, dtype=np.uint8)
                         self._put_frame(frame)
+                        produced += 1
                 finally:
                     try:
                         reader.close()
                     except Exception:
                         pass
+                if produced == 0:
+                    # Header leggibile ma zero frame decodificati: senza questa
+                    # guardia il while ricreerebbe reader e subprocess ffmpeg in
+                    # loop stretto per tutta la vita dello sfondo video.
+                    print(f"Video senza frame decodificabili, decoder fermato: {self._path}")
+                    break
                 # Fine stream: il while esterno ricrea il reader e riparte (loop).
         except Exception as exc:
             # Path/codec non leggibile o errore di decodifica: termina il thread

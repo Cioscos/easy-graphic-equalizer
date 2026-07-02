@@ -35,7 +35,7 @@ class SliderCustomFrame(QWidget):
     ):
         super().__init__(parent)
 
-        if warning_trigger_value and not warning_text:
+        if warning_trigger_value is not None and not warning_text:
             raise ValueError("No warning text when warning_trigger_value set")
 
         self._command = command
@@ -57,7 +57,10 @@ class SliderCustomFrame(QWidget):
         if self._is_int:
             self._slider.setMinimum(int(from_))
             self._slider.setMaximum(int(to))
-            self._slider.setSingleStep(1)
+            # steps, se dato, definisce la granularità (frecce/PgUp) anche per
+            # gli slider int: prima era silenziosamente ignorato.
+            step = max(1, int(round((to - from_) / steps))) if steps else 1
+            self._slider.setSingleStep(step)
             self._slider.setValue(int(round(initial_value)))
         else:
             self._slider.setMinimum(0)
@@ -80,7 +83,7 @@ class SliderCustomFrame(QWidget):
         self.warning_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(self.warning_label)
         self.warning_label.setVisible(
-            bool(warning_trigger_value and self.get_value() >= warning_trigger_value)
+            warning_trigger_value is not None and self.get_value() >= warning_trigger_value
         )
 
         # Aggiorna l'etichetta iniziale *prima* di collegare il segnale, così la
@@ -104,7 +107,7 @@ class SliderCustomFrame(QWidget):
 
     def _on_changed(self, _) -> None:
         self._refresh_value_label()
-        if self._warning_trigger_value:
+        if self._warning_trigger_value is not None:
             self.warning_label.setVisible(self._warning_trigger_value <= self.get_value())
         if self._command:
             self._command(self.get_value())
@@ -124,5 +127,5 @@ class SliderCustomFrame(QWidget):
             self._slider.setValue(self._to_ticks(value))
         self._slider.blockSignals(False)
         self._refresh_value_label()
-        if self._warning_trigger_value:
+        if self._warning_trigger_value is not None:
             self.warning_label.setVisible(self._warning_trigger_value <= self.get_value())

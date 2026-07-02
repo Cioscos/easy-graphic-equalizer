@@ -52,9 +52,14 @@ class OptionMenuCustomFrame(QWidget):
         return self._combo.currentText()
 
     def set_value(self, value: str) -> None:
-        """Imposta il valore del menu senza scatenare la callback."""
+        """Imposta il valore del menu senza scatenare la callback. Un valore
+        sconosciuto lascia la selezione invariata (con log): dopo la
+        validazione dei profili non dovrebbe più accadere — se accade è un
+        bug a monte da rendere visibile, non da nascondere."""
         idx = self._combo.findText(str(value))
-        if idx >= 0:
-            self._combo.blockSignals(True)
-            self._combo.setCurrentIndex(idx)
-            self._combo.blockSignals(False)
+        if idx < 0:
+            print(f"OptionMenu: valore sconosciuto {value!r}, selezione invariata")
+            return
+        self._combo.blockSignals(True)
+        self._combo.setCurrentIndex(idx)
+        self._combo.blockSignals(False)

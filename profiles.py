@@ -6,6 +6,7 @@ tollerante fra versioni, i riferimenti-sfondo portabili con safe fallback e lo
 store su disco (ProfileStore).
 """
 import json
+import math
 import os
 import re
 import shutil
@@ -32,6 +33,7 @@ DEFAULTS = {
     "viz_mode": 0,
     "bg_alpha": 0.5,
     "bars_alpha": 1.0,
+    "menu_toggle_key": "F1",
     "background": {"type": "image", "ref": {"kind": "resource", "name": DEFAULT_BG_NAME}},
     "color_mode": 0,
     "color_a": [0.231, 0.420, 1.0],
@@ -61,6 +63,95 @@ DEFAULTS = {
 _INVALID_NAME = re.compile(r"[^\w\-. ]", re.UNICODE)
 
 
+def _clamp(v, lo, hi):
+    return max(lo, min(hi, v))
+
+
+def _is_number(v) -> bool:
+    return isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v)
+
+
+def _valid_float(lo: float, hi: float):
+    def check(v, default):
+        return _clamp(float(v), lo, hi) if _is_number(v) else default
+    return check
+
+
+def _valid_int(lo: int, hi: int):
+    def check(v, default):
+        return int(_clamp(int(round(v)), lo, hi)) if _is_number(v) else default
+    return check
+
+
+def _valid_bool(v, default):
+    if isinstance(v, bool):
+        return v
+    if isinstance(v, (int, float)):
+        return bool(v)
+    return default
+
+
+def _valid_rgb(v, default):
+    if isinstance(v, (list, tuple)) and len(v) == 3 and all(_is_number(c) for c in v):
+        return [_clamp(float(c), 0.0, 1.0) for c in v]
+    return default
+
+
+def _valid_background(v, default):
+    if isinstance(v, dict) and v.get("type") in ("image", "video") and isinstance(v.get("ref"), dict):
+        return v
+    return default
+
+
+def _valid_str(v, default):
+    return v if isinstance(v, str) and v else default
+
+
+# Validatori per chiave: tipo sbagliato → default, fuori range → clamp.
+# I range combaciano con gli slider della GUI (gui/main_window_gui.py) e del
+# menù in-window (thread/imgui_overlay.py).
+_VALIDATORS = {
+    "noise_threshold": _valid_float(0.0, 1.0),
+    "n_bands": _valid_int(1, 100),
+    "db_floor": _valid_float(-90.0, -25.0),
+    "db_ceiling": _valid_float(-20.0, 6.0),
+    "attack_tau": _valid_float(0.001, 0.1),
+    "release_tau": _valid_float(0.02, 1.0),
+    "tilt_db_per_oct": _valid_float(-6.0, 6.0),
+    "viz_mode": _valid_int(0, 3),
+    "bg_alpha": _valid_float(0.0, 1.0),
+    "bars_alpha": _valid_float(0.0, 1.0),
+    # Solo type-check: la validazione di appartenenza a TOGGLE_KEY_NAMES resta
+    # al renderer (toggle_key_to_glfw ha il fallback F1) — questo modulo deve
+    # restare puro, senza importare glfw.
+    "menu_toggle_key": _valid_str,
+    "background": _valid_background,
+    "color_mode": _valid_int(0, 3),
+    "color_a": _valid_rgb,
+    "color_b": _valid_rgb,
+    "green_split": _valid_float(0.0, 1.0),
+    "yellow_split": _valid_float(0.0, 1.0),
+    "bar_width": _valid_float(0.1, 1.0),
+    "rounded": _valid_bool,
+    "anchor_center": _valid_bool,
+    "band_symmetric": _valid_bool,
+    "inner_radius": _valid_float(0.0, 0.8),
+    "line_thickness": _valid_float(0.002, 0.06),
+    "fill": _valid_bool,
+    "osc_mirror": _valid_bool,
+    "osc_smoothing": _valid_float(0.0, 1.0),
+    "peakcap_enabled": _valid_bool,
+    "peakcap_color": _valid_rgb,
+    "peakcap_hold": _valid_float(0.0, 2.0),
+    "peakcap_fall": _valid_float(0.1, 3.0),
+    "bloom_enabled": _valid_bool,
+    "bloom_intensity": _valid_float(0.0, 3.0),
+    "beat_enabled": _valid_bool,
+    "beat_intensity": _valid_float(0.0, 0.3),
+    "beat_sensitivity": _valid_float(1.05, 3.0),
+}
+
+
 def serialize(settings: dict) -> dict:
     """Rende il dict JSON-safe (tuple→list) sull'insieme di chiavi noto. No validazione range."""
     out = {}
@@ -73,19 +164,34 @@ def serialize(settings: dict) -> dict:
 
 
 def deserialize(raw: dict) -> dict:
-    """Riempie le chiavi mancanti con i default e ignora le sconosciute.
-
-    Tollerante fra versioni di profilo. Solleva ValueError se `raw` non è un dict.
+    """Riempie le chiavi mancanti con i default, valida tipo e range di quelle
+    presenti (tipo sbagliato → default; fuori range → clamp) e ignora le
+    sconosciute. Tollerante fra versioni. Solleva ValueError se raw non è dict.
     """
     if not isinstance(raw, dict):
         raise ValueError("settings non è un oggetto JSON")
-    return {key: raw.get(key, default) for key, default in DEFAULTS.items()}
+    out = {}
+    for key, default in DEFAULTS.items():
+        if key in raw:
+            validator = _VALIDATORS.get(key)
+            out[key] = validator(raw[key], default) if validator else raw[key]
+        else:
+            out[key] = default
+    return out
+
+
+_WINDOWS_RESERVED = re.compile(r"^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])$", re.IGNORECASE)
 
 
 def sanitize_name(name: str) -> str:
-    """Nome profilo → nome-file sicuro (preserva lettere accentate, rimuove separatori)."""
+    """Nome profilo → nome-file sicuro (preserva lettere accentate, rimuove
+    separatori, evita i nomi-device riservati di Windows)."""
     cleaned = _INVALID_NAME.sub("_", (name or "").strip()).strip(". ")
-    return cleaned or "profilo"
+    if not cleaned:
+        return "profilo"
+    if _WINDOWS_RESERVED.match(cleaned):
+        return cleaned + "_"
+    return cleaned
 
 
 def _default_bg_path(rm: ResourceManager) -> str:
@@ -111,24 +217,30 @@ def encode_bg_ref(path: str, rm: ResourceManager) -> dict:
 def resolve_bg_ref(ref: dict, rm: ResourceManager) -> Tuple[str, bool]:
     """Risolve un riferimento-sfondo in un path assoluto.
 
-    Ritorna (path, ok). Se il file non esiste → (path predefinito bundle, False).
+    Ritorna (path, ok). Se il file non esiste → (path predefinito bundle, False);
+    se manca anche l'asset predefinito → ("", False): il chiamante tratta il
+    path vuoto come "nessuno sfondo" (il resolver non deve MAI sollevare).
     """
-    default = _default_bg_path(rm)
+    def _default() -> str:
+        try:
+            return _default_bg_path(rm)
+        except FileNotFoundError:
+            return ""
+
     if not isinstance(ref, dict):
-        return default, False
+        return _default(), False
     kind = ref.get("kind")
     if kind == "resource":
         name = ref.get("name") or DEFAULT_BG_NAME
         try:
             return str(rm.get_image_path(name, "bg")), True
         except FileNotFoundError:
-            return default, False
+            return _default(), False
     if kind == "path":
         value = ref.get("value") or ""
         if value and os.path.isfile(value):
             return value, True
-        return default, False
-    return default, False
+    return _default(), False
 
 
 def _default_config_dir() -> Path:
@@ -140,6 +252,16 @@ def _default_config_dir() -> Path:
     else:
         base = os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config")
     return Path(base) / "sound-wave"
+
+
+def _atomic_write_text(dest: Path, text: str) -> None:
+    """Scrittura atomica: file temporaneo nella stessa directory + os.replace.
+
+    Un kill/blackout a metà scrittura non può lasciare il file di destinazione
+    troncato (os.replace è atomico sullo stesso filesystem)."""
+    tmp = dest.with_name(dest.name + ".tmp")
+    tmp.write_text(text, encoding="utf-8")
+    os.replace(tmp, dest)
 
 
 class ProfileStore:
@@ -159,7 +281,14 @@ class ProfileStore:
         return self.profiles_dir / f"{sanitize_name(name)}.json"
 
     def list_names(self) -> List[str]:
-        return sorted(p.stem for p in self.profiles_dir.glob("*.json"))
+        # Espone solo stem stabili al round-trip di sanitizzazione: un file
+        # creato esternamente con caratteri fuori whitelist verrebbe listato
+        # ma _path_for lo risolverebbe su un ALTRO file → load/delete/export
+        # fallirebbero per sempre su quella voce.
+        return sorted(
+            p.stem for p in self.profiles_dir.glob("*.json")
+            if sanitize_name(p.stem) == p.stem
+        )
 
     def load(self, name: str) -> dict:
         raw = json.loads(self._path_for(name).read_text(encoding="utf-8"))
@@ -176,13 +305,20 @@ class ProfileStore:
 
     def write_envelope(self, settings: dict, dest_path) -> None:
         envelope = {"app": APP_TAG, "version": CURRENT_VERSION, "settings": serialize(settings)}
-        Path(dest_path).write_text(
-            json.dumps(envelope, indent=2, ensure_ascii=False), encoding="utf-8"
+        _atomic_write_text(
+            Path(dest_path), json.dumps(envelope, indent=2, ensure_ascii=False)
         )
 
     def import_file(self, src_path) -> str:
         raw = json.loads(Path(src_path).read_text(encoding="utf-8"))
-        settings = deserialize(raw.get("settings", {}))
+        # Valida l'envelope: senza questo check QUALUNQUE JSON dict-shaped
+        # (es. package.json) diventerebbe in silenzio un profilo tutto-default.
+        # `version` è letto ma non bloccato: tolleranza in avanti.
+        if not isinstance(raw, dict) or raw.get("app") != APP_TAG:
+            raise ValueError("il file non è un profilo Sound Wave")
+        if not isinstance(raw.get("settings"), dict):
+            raise ValueError("profilo senza sezione settings valida")
+        settings = deserialize(raw["settings"])
         base = sanitize_name(Path(src_path).stem)
         existing = set(self.list_names())
         name, i = base, 2
@@ -195,11 +331,11 @@ class ProfileStore:
     def get_last(self) -> Optional[str]:
         try:
             data = json.loads(self._settings_file.read_text(encoding="utf-8"))
-            return data.get("last_profile")
+            return data.get("last_profile") if isinstance(data, dict) else None
         except (json.JSONDecodeError, OSError):
             return None
 
     def set_last(self, name: str) -> None:
-        self._settings_file.write_text(
-            json.dumps({"last_profile": name}, ensure_ascii=False), encoding="utf-8"
+        _atomic_write_text(
+            self._settings_file, json.dumps({"last_profile": name}, ensure_ascii=False)
         )

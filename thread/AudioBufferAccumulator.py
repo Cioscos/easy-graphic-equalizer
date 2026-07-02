@@ -80,6 +80,13 @@ class AudioBufferAccumulator:
         Returns:
             np.ndarray: Array (window_size, channels), oppure un array vuoto se
                         non sono ancora arrivati abbastanza frame.
+
+        NB (contratto): prima che il buffer sia pieno ritorna np.array([])
+        (shape (0,), float64), NON una matrice (0, channels) float32; e quando
+        write_pos == 0 ritorna il buffer VIVO aliasato, valido solo fino alla
+        prossima add_samples. Sicuro nell'uso attuale (lettura e scrittura sul
+        solo thread GL, snapshot consumato subito); qualunque nuovo chiamante
+        deve rispettare entrambe le cose.
         """
         if self.total_written < self.window_size:
             # Non ancora abbastanza frame per una finestra completa

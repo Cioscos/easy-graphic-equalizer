@@ -8,7 +8,7 @@ from PIL import Image
 import glfw
 import qdarktheme
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtGui import QIcon, QAction, QActionGroup
 from PySide6.QtWidgets import (
     QFileDialog,
@@ -37,7 +37,7 @@ from gui.optionmenu_frame import OptionMenuCustomFrame
 from gui.background_filepicker_frame import BackgroundFilepickerFrame
 from gui.help_window import HelpWindow
 from gui.animated_button import AnimatedButton
-from gui.color_picker_frame import ColorPickerFrame
+from gui.color_picker_frame import ColorPickerFrame, rgb01_to_hex
 from gui.theme import (
     font_button, font_label, font_section, font_body,
     theme_kwargs,
@@ -85,6 +85,9 @@ class AudioCaptureGUI(QMainWindow):
     # GLFW, il segnale lo marshalla sul thread GUI (connessione queued).
     _opengl_closed = Signal()
     _setting_changed = Signal(dict)
+    # Emesso quando la cattura audio muore per errore: il callback parte sul
+    # thread di cattura, il segnale lo marshalla sul thread GUI.
+    _audio_error = Signal(str)
 
     def __init__(self):
         super().__init__()
@@ -144,9 +147,15 @@ class AudioCaptureGUI(QMainWindow):
         self._profile_store = ProfileStore()
 
         # Immagine di sfondo di default (PIL): usata dal renderer OpenGL.
-        self._default_bg_path = str(self.resource_manager.get_image_path(profiles.DEFAULT_BG_NAME, 'bg'))
+        # Un'installazione con asset mancante non deve impedire l'avvio: il
+        # renderer gestisce bg_image=None (nessuno sfondo).
+        try:
+            self._default_bg_path = str(self.resource_manager.get_image_path(profiles.DEFAULT_BG_NAME, 'bg'))
+            self.bg_img = Image.open(self._default_bg_path)
+        except Exception:
+            self._default_bg_path = ""
+            self.bg_img = None
         self.bg_image_path = self._default_bg_path  # path immagine attiva (per i profili)
-        self.bg_img = Image.open(self._default_bg_path)
 
         # Costruzione UI: pannello di controllo (nessuna anteprima)
         self._build_menu_bar()
@@ -183,12 +192,21 @@ class AudioCaptureGUI(QMainWindow):
         self.nav.setCurrentRow(0)
         self._opengl_closed.connect(self._on_opengl_closed)
         self._setting_changed.connect(self._on_setting_changed)
+        self._audio_error.connect(self._on_audio_error)
 
-        # Auto-load dell'ultimo profilo usato (se ancora presente)
-        last = self._profile_store.get_last()
-        if last and last in self._profile_store.list_names():
-            self.profile_bar.set_profiles(self._profile_store.list_names(), last)
-            self._apply_profile(self._profile_store.load(last))
+        # Auto-load dell'ultimo profilo usato (se ancora presente). Protetto:
+        # un profilo corrotto su disco non deve impedire l'avvio — l'app parte
+        # coi default e segnala il problema senza cancellare il file.
+        last = None
+        try:
+            last = self._profile_store.get_last()
+            if last and last in self._profile_store.list_names():
+                self.profile_bar.set_profiles(self._profile_store.list_names(), last)
+                self._apply_profile(self._profile_store.load(last))
+        except Exception as e:
+            msg = (f"Impossibile caricare l'ultimo profilo «{last}»: {e}\n"
+                   "Avvio con le impostazioni predefinite.")
+            QTimer.singleShot(0, lambda: QMessageBox.warning(self, "Profilo", msg))
 
     # --- Costruzione pannelli ------------------------------------------------
     def _build_menu_bar(self):
@@ -222,7 +240,15 @@ class AudioCaptureGUI(QMainWindow):
         self.device_listbox.setFont(font_body())
         self.device_listbox.setMaximumHeight(120)
         v.addWidget(self.device_listbox)
-        asyncio.run(self.load_devices())
+        try:
+            asyncio.run(self.load_devices())
+        except Exception as e:
+            # es. Linux senza PulseAudio/PipeWire: soundcard solleva qui.
+            QMessageBox.critical(
+                self, "Errore audio",
+                f"Impossibile enumerare i dispositivi audio: {e}\n"
+                "Su Linux servono PulseAudio o PipeWire attivi.",
+            )
         # Singolo clic per selezionare (più scopribile); il doppio clic resta valido.
         self.device_listbox.itemClicked.connect(self.on_device_selected)
         self.device_listbox.itemDoubleClicked.connect(self.on_device_selected)
@@ -355,6 +381,7 @@ class AudioCaptureGUI(QMainWindow):
             header_name='Sfondo (immagine o video):',
             placeholder_text='Percorso file...',
             apply_command=self.apply_bg_command,
+            start_dir=str(self.resource_manager.base_path / "bg"),
         )
         self.alpha_slider = SliderCustomFrame(
             header_name='Trasparenza sfondo:',
@@ -476,21 +503,22 @@ class AudioCaptureGUI(QMainWindow):
             command=self.update_yellow_split,
             initial_value=self.bars_yellow_split,
         )
-        # Tinta unica: un colore
+        # Tinta unica e Gradiente condividono color_a: gli swatch partono
+        # dallo stato self.* (unica fonte di verità), non da esadecimali fissi.
         self.bars_solid_color = ColorPickerFrame(
             header_name='Colore barre:',
-            initial_color='#22d36a',
+            initial_color=rgb01_to_hex(self.bars_color_a),
             command=self.update_color_a,
         )
         # Gradiente: due colori
         self.bars_grad_base = ColorPickerFrame(
             header_name='Colore base:',
-            initial_color='#3b6bff',
+            initial_color=rgb01_to_hex(self.bars_color_a),
             command=self.update_color_a,
         )
         self.bars_grad_top = ColorPickerFrame(
             header_name='Colore cima:',
-            initial_color='#ff3bd0',
+            initial_color=rgb01_to_hex(self.bars_color_b),
             command=self.update_color_b,
         )
         return self._page(
@@ -631,7 +659,14 @@ class AudioCaptureGUI(QMainWindow):
 
     def get_available_monitors(self) -> list[str]:
         if not glfw.init():
-            raise Exception("GLFW initialization failed")
+            # Niente raise: l'app deve mostrarsi comunque (magari l'utente vuole
+            # solo gestire i profili). Il fullscreen resterà non avviabile.
+            QMessageBox.critical(
+                self, "Errore",
+                "Inizializzazione GLFW fallita: nessun display OpenGL disponibile.\n"
+                "La visualizzazione fullscreen non sarà utilizzabile.",
+            )
+            return []
         monitors = glfw.get_monitors()
         monitors_name = [
             f"{idx + 1}. {glfw.get_monitor_name(monitor).decode('utf-8')}"
@@ -648,11 +683,24 @@ class AudioCaptureGUI(QMainWindow):
         device = self.devices[row]
 
         if self.last_device_selected != device:
-            self.audio_queue = None
             self.stop_audio_thread()
 
-            self.audio_queue = queue.Queue(maxsize=MAX_QUEUE_SIZE)
-            self.audio_thread = AudioCaptureThread(self.audio_queue, device=device)
+            # Riusa la STESSA coda: il renderer in esecuzione ne tiene il
+            # riferimento ricevuto alla costruzione — ricrearla lo lascerebbe
+            # per sempre su una coda morta (barre congelate). Drena il residuo
+            # del vecchio device.
+            if self.audio_queue is None:
+                self.audio_queue = queue.Queue(maxsize=MAX_QUEUE_SIZE)
+            else:
+                while True:
+                    try:
+                        self.audio_queue.get_nowait()
+                    except queue.Empty:
+                        break
+            self.audio_thread = AudioCaptureThread(
+                self.audio_queue, device=device,
+                on_error=lambda msg: self._audio_error.emit(msg),
+            )
             self.audio_thread.start()
             self.last_device_selected = device
 
@@ -664,8 +712,11 @@ class AudioCaptureGUI(QMainWindow):
     def stop_audio_thread(self):
         if self.audio_thread:
             self.audio_thread.stop()
-            while self.audio_thread.is_alive():
-                self.audio_thread.join(timeout=0.1)
+            # Join limitato: un record() bloccato (Linux, silenzio di sistema)
+            # non deve congelare la GUI. Il thread è daemon: se non esce qui,
+            # muore comunque col processo.
+            self.audio_thread.join(timeout=2.0)
+            self.audio_thread = None
 
     # --- Sfondo --------------------------------------------------------------
     def apply_bg_command(self):
@@ -685,16 +736,22 @@ class AudioCaptureGUI(QMainWindow):
             self._apply_image_background(filename)
 
     def _apply_image_background(self, filename: str):
-        """Carica un'immagine come sfondo del renderer OpenGL."""
+        """Carica un'immagine come sfondo del renderer OpenGL. Lo stato viene
+        mutato solo a caricamento riuscito: un fallimento non deve cancellare
+        un eventuale sfondo video attivo (che il renderer continua a mostrare,
+        e che «Salva» deve continuare a persistere)."""
         try:
-            self.bg_video_path = None  # torna alla modalità immagine
-            self.bg_img = Image.open(filename)
-            self.bg_image_path = filename
-            self.update_bg_opengl(self.bg_img)
+            img = Image.open(filename)
         except FileNotFoundError:
             QMessageBox.critical(self, 'Errore', 'File non trovato!')
+            return
         except Exception as e:
             QMessageBox.critical(self, 'Errore', f"Errore nel caricamento dell'immagine: {e}")
+            return
+        self.bg_video_path = None  # torna alla modalità immagine
+        self.bg_img = img
+        self.bg_image_path = filename
+        self.update_bg_opengl(self.bg_img)
 
     def _apply_video_background(self, filename: str):
         """Seleziona un video come sfondo: se il fullscreen è aperto parte subito."""
@@ -792,6 +849,10 @@ class AudioCaptureGUI(QMainWindow):
 
     def update_color_a(self, rgb):
         self.bars_color_a = rgb
+        # Tinta unica e Gradiente condividono color_a: tieni allineati entrambi
+        # gli swatch (set_color non riscatena la callback → niente loop).
+        self.bars_solid_color.set_color(rgb)
+        self.bars_grad_base.set_color(rgb)
         if self.equalizer_opengl_thread:
             self.equalizer_control_queue.put({"type": "set_color_a", "value": rgb})
 
@@ -944,8 +1005,9 @@ class AudioCaptureGUI(QMainWindow):
 
         if self.equalizer_opengl_thread:
             self.equalizer_opengl_thread.stop()
-            while self.equalizer_opengl_thread.is_alive():
-                self.equalizer_opengl_thread.join(timeout=0.1)
+            # Join limitato: con lo stop non più inghiottibile (fix C1) il
+            # teardown è rapido; il limite protegge comunque la GUI.
+            self.equalizer_opengl_thread.join(timeout=5.0)
             self.equalizer_opengl_thread = None
             self._set_fullscreen_button_running(False)
         else:
@@ -1005,8 +1067,26 @@ class AudioCaptureGUI(QMainWindow):
         self._setting_changed.emit(message)
 
     def _on_opengl_closed(self):
-        self.equalizer_opengl_thread = None
+        # Il callback parte a teardown GLFW completato, quindi il join è quasi
+        # istantaneo. Idempotente: se lo stop è partito dalla GUI (fullscreen_
+        # command/closeEvent) il riferimento è già None e resta solo il bottone.
+        thread = self.equalizer_opengl_thread
+        if thread is not None:
+            thread.join(timeout=2.0)
+            self.equalizer_opengl_thread = None
         self._set_fullscreen_button_running(False)
+
+    def _on_audio_error(self, message: str) -> None:
+        """Slot (thread GUI): la cattura audio è morta. Azzera lo stato così
+        riselezionare lo STESSO device fa ripartire la cattura (senza questo
+        reset la guardia last_device_selected renderebbe il click un no-op)."""
+        self.audio_thread = None
+        self.last_device_selected = None
+        QMessageBox.warning(
+            self, "Audio",
+            f"La cattura audio si è interrotta: {message}\n"
+            "Riseleziona il dispositivo per riprovare.",
+        )
 
     def _on_setting_changed(self, message: dict) -> None:
         """
@@ -1280,16 +1360,23 @@ class AudioCaptureGUI(QMainWindow):
             if self.equalizer_opengl_thread:
                 self.equalizer_control_queue.put({"type": "set_video", "value": path})
         else:
-            # immagine, oppure video mancante → fallback immagine
-            self.bg_video_path = None
-            self.bg_image_path = path
-            try:
-                self.bg_img = Image.open(path)
-            except Exception:
-                ok = False
-            self.file_picker.set_filename(path)
-            if self.equalizer_opengl_thread:
-                self.equalizer_control_queue.put({"type": "set_image", "value": self.bg_img})
+            # immagine, oppure video mancante → fallback immagine. Stato mutato
+            # solo se l'apertura riesce: mai persistere un path che non si apre.
+            img = None
+            if path:
+                try:
+                    img = Image.open(path)
+                except Exception:
+                    ok = False
+            else:
+                ok = False   # resolve_bg_ref: manca anche l'asset predefinito
+            if img is not None:
+                self.bg_video_path = None
+                self.bg_img = img
+                self.bg_image_path = path
+                self.file_picker.set_filename(path)
+                if self.equalizer_opengl_thread:
+                    self.equalizer_control_queue.put({"type": "set_image", "value": self.bg_img})
 
         if not ok:
             ref_desc = ref.get("value") or ref.get("name") or str(ref)
@@ -1303,10 +1390,10 @@ class AudioCaptureGUI(QMainWindow):
             return
         try:
             settings = self._profile_store.load(name)
+            self._apply_profile(settings)
         except Exception as e:
             QMessageBox.warning(self, "Profilo", f"Impossibile caricare il profilo: {e}")
             return
-        self._apply_profile(settings)
         self._profile_store.set_last(name)
 
     def _on_profile_save(self) -> None:
@@ -1321,8 +1408,17 @@ class AudioCaptureGUI(QMainWindow):
         name, accepted = QInputDialog.getText(self, "Salva profilo", "Nome del profilo:")
         if not accepted or not name.strip():
             return
-        self._profile_store.save(name, self._collect_profile())
         saved = profiles.sanitize_name(name)
+        # Il confronto va fatto sul nome SANITIZZATO: nomi diversi possono
+        # collidere sullo stesso file (es. "a/b" → "a_b").
+        if saved in self._profile_store.list_names():
+            confirm = QMessageBox.question(
+                self, "Salva profilo",
+                f"Il profilo «{saved}» esiste già. Sovrascriverlo?",
+            )
+            if confirm != QMessageBox.StandardButton.Yes:
+                return
+        self._profile_store.save(name, self._collect_profile())
         self._refresh_profile_bar(selected=saved)
         self._profile_store.set_last(saved)
 
@@ -1346,11 +1442,11 @@ class AudioCaptureGUI(QMainWindow):
             return
         try:
             name = self._profile_store.import_file(path)
+            self._refresh_profile_bar(selected=name)
+            self._apply_profile(self._profile_store.load(name))
         except Exception as e:
             QMessageBox.warning(self, "Importa profilo", f"File non valido: {e}")
             return
-        self._refresh_profile_bar(selected=name)
-        self._apply_profile(self._profile_store.load(name))
         self._profile_store.set_last(name)
 
     def _on_profile_export(self) -> None:
@@ -1375,12 +1471,10 @@ class AudioCaptureGUI(QMainWindow):
         """
         if self.audio_thread:
             self.audio_thread.stop()
-            while self.audio_thread.is_alive():
-                self.audio_thread.join(timeout=0.1)
+            self.audio_thread.join(timeout=2.0)
 
         if self.equalizer_opengl_thread:
             self.equalizer_opengl_thread.stop()
-            while self.equalizer_opengl_thread.is_alive():
-                self.equalizer_opengl_thread.join(timeout=0.1)
+            self.equalizer_opengl_thread.join(timeout=5.0)
 
         event.accept()

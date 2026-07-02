@@ -74,9 +74,13 @@ def test_resolve_bg_ref_ok_and_fallback():
     assert ok is False and path.endswith(profiles.DEFAULT_BG_NAME)
 
 
+_TMPDIRS: list = []
+
+
 def _fresh_store():
-    tmp = tempfile.mkdtemp(prefix="swprof_")
-    return profiles.ProfileStore(config_dir=tmp), tmp
+    tmp = tempfile.TemporaryDirectory(prefix="swprof_")
+    _TMPDIRS.append(tmp)
+    return profiles.ProfileStore(config_dir=tmp.name), tmp.name
 
 
 def test_store_save_list_load_delete():
@@ -102,7 +106,9 @@ def test_store_export_import_roundtrip_and_collision():
     store, _ = _fresh_store()
     s = dict(profiles.DEFAULTS); s["bars_alpha"] = 0.42
     store.save("alfa", s)
-    dest = Path(tempfile.mkdtemp(prefix="swexp_")) / "alfa.json"
+    exp = tempfile.TemporaryDirectory(prefix="swexp_")
+    _TMPDIRS.append(exp)
+    dest = Path(exp.name) / "alfa.json"
     store.export("alfa", dest)
     assert dest.is_file()
 
@@ -124,18 +130,128 @@ def test_store_import_invalid_raises():
     raise AssertionError("import_file doveva fallire su JSON non valido")
 
 
+def test_deserialize_wrong_types_fall_back_to_defaults():
+    out = profiles.deserialize({
+        "viz_mode": None,          # int atteso
+        "n_bands": "x",            # int atteso
+        "bg_alpha": "0.5",         # float atteso (stringa non accettata)
+        "rounded": "sì",           # bool atteso
+        "color_a": [1, 2],         # rgb: servono 3 componenti
+        "peakcap_color": "bianco", # rgb atteso
+        "background": "non-dict",  # dict atteso
+        "attack_tau": float("nan"),  # float non finito
+    })
+    for key in ("viz_mode", "n_bands", "bg_alpha", "rounded", "color_a",
+                "peakcap_color", "background", "attack_tau"):
+        assert out[key] == profiles.DEFAULTS[key], (key, out[key])
+
+
+def test_deserialize_out_of_range_clamped():
+    out = profiles.deserialize({
+        "bar_width": 5.0,           # range [0.1, 1.0]
+        "n_bands": 1000,            # range [1, 100]
+        "db_floor": -200,           # range [-90, -25]
+        "color_b": [2.0, -1.0, 0.5],
+        "beat_sensitivity": 0.0,    # range [1.05, 3.0]
+    })
+    assert out["bar_width"] == 1.0
+    assert out["n_bands"] == 100
+    assert out["db_floor"] == -90.0
+    assert out["color_b"] == [1.0, 0.0, 0.5]
+    assert out["beat_sensitivity"] == 1.05
+
+
+def test_get_last_non_dict_settings_returns_none():
+    store, tmp = _fresh_store()
+    (Path(tmp) / "settings.json").write_text('["x"]', encoding="utf-8")
+    assert store.get_last() is None
+
+
+def test_sanitize_name_windows_reserved():
+    assert profiles.sanitize_name("CON") == "CON_"
+    assert profiles.sanitize_name("con") == "con_"
+    assert profiles.sanitize_name("COM1") == "COM1_"
+    assert profiles.sanitize_name("Console") == "Console"  # non riservato
+
+
+def test_list_names_skips_unresolvable_stems():
+    store, tmp = _fresh_store()
+    store.save("buono", dict(profiles.DEFAULTS))
+    # File creato esternamente con un carattere fuori whitelist (legale su
+    # Linux, dove girano i test): verrebbe listato ma _path_for lo
+    # risanitizzerebbe su un file diverso → mai caricabile/eliminabile.
+    (Path(tmp) / "profiles" / "foo?bar.json").write_text("{}", encoding="utf-8")
+    assert store.list_names() == ["buono"]
+
+
+def test_store_import_foreign_json_rejected():
+    store, tmp = _fresh_store()
+    foreign = Path(tmp) / "package.json"
+    foreign.write_text('{"name": "x", "version": "1.0.0"}', encoding="utf-8")
+    try:
+        store.import_file(foreign)
+    except ValueError:
+        assert store.list_names() == []   # niente profilo fantasma
+        return
+    raise AssertionError("import_file doveva rifiutare un JSON estraneo")
+
+
+def test_menu_toggle_key_roundtrip():
+    s = dict(profiles.DEFAULTS)
+    s["menu_toggle_key"] = "M"
+    out = profiles.deserialize(profiles.serialize(s))
+    assert out.get("menu_toggle_key") == "M", out.get("menu_toggle_key")
+    # tipo sbagliato → default
+    assert profiles.deserialize({"menu_toggle_key": 42})["menu_toggle_key"] == "F1"
+
+
+def test_write_envelope_atomic_no_tmp_leftovers():
+    store, tmp = _fresh_store()
+    store.save("alfa", dict(profiles.DEFAULTS))
+    store.set_last("alfa")
+    leftovers = list(Path(tmp).rglob("*.tmp"))
+    assert leftovers == [], leftovers
+    assert store.load("alfa")["n_bands"] == profiles.DEFAULTS["n_bands"]
+    assert store.get_last() == "alfa"
+
+
+def test_load_truncated_profile_raises():
+    store, _ = _fresh_store()
+    store.save("alfa", dict(profiles.DEFAULTS))
+    path = store._path_for("alfa")
+    path.write_text(path.read_text(encoding="utf-8")[:20], encoding="utf-8")
+    try:
+        store.load("alfa")
+    except (ValueError, json.JSONDecodeError):
+        return
+    raise AssertionError("load doveva fallire su JSON troncato")
+
+
 def main():
-    test_serialize_roundtrip_preserves_values()
-    test_deserialize_fills_missing_and_ignores_unknown()
-    test_deserialize_rejects_non_dict()
-    test_sanitize_name()
-    test_encode_bg_ref_resource_vs_path()
-    test_resolve_bg_ref_ok_and_fallback()
-    test_store_save_list_load_delete()
-    test_store_last_profile()
-    test_store_export_import_roundtrip_and_collision()
-    test_store_import_invalid_raises()
-    print("OK")
+    try:
+        test_serialize_roundtrip_preserves_values()
+        test_deserialize_fills_missing_and_ignores_unknown()
+        test_deserialize_rejects_non_dict()
+        test_sanitize_name()
+        test_encode_bg_ref_resource_vs_path()
+        test_resolve_bg_ref_ok_and_fallback()
+        test_store_save_list_load_delete()
+        test_store_last_profile()
+        test_store_export_import_roundtrip_and_collision()
+        test_store_import_invalid_raises()
+        test_write_envelope_atomic_no_tmp_leftovers()
+        test_load_truncated_profile_raises()
+        test_deserialize_wrong_types_fall_back_to_defaults()
+        test_deserialize_out_of_range_clamped()
+        test_menu_toggle_key_roundtrip()
+        test_store_import_foreign_json_rejected()
+        test_get_last_non_dict_settings_returns_none()
+        test_sanitize_name_windows_reserved()
+        test_list_names_skips_unresolvable_stems()
+        print("OK")
+    finally:
+        for t in _TMPDIRS:
+            t.cleanup()
 
 
 if __name__ == "__main__":

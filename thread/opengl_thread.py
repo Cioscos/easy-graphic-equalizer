@@ -12,11 +12,14 @@ import numpy as np
 from PIL import Image
 from PIL.Image import Transpose
 
+from imgui_bundle import imgui
+
 from thread.AudioBufferAccumulator import AudioBufferAccumulator
 from thread.video_decode_thread import VideoDecodeThread
 from thread.frame_time_stats import FrameTimeStats
 from thread.imgui_overlay import ImGuiOverlay
 from thread.menu_keys import toggle_key_to_glfw
+from thread.render_params import effective_splits, sanitize_fps
 
 RATE = 44100
 N_FFT = 4096
@@ -554,7 +557,9 @@ class EqualizerOpenGLThread(threading.Thread):
         self._bass_energy = 0.0       # energia bassi dell'ultimo frame (da create_equalizer)
         # Maschera dei bin FFT sotto il cutoff bassi (per l'energia beat)
         _freqs = np.fft.rfftfreq(N_FFT, 1.0 / RATE)
-        self._bass_mask = _freqs < BASS_CUTOFF_HZ
+        # Escludi il bin DC (0 Hz): un offset DC nel segnale catturato gonfia
+        # stabilmente l'energia dei bassi e desensibilizza la beat detection.
+        self._bass_mask = (_freqs > 0) & (_freqs < BASS_CUTOFF_HZ)
 
         # --- Bloom (Blocco 2) ---
         self._bloom_enabled = bool(bloom_enabled)
@@ -594,6 +599,7 @@ class EqualizerOpenGLThread(threading.Thread):
         self._bloom_fbos = []      # 2 FBO ping-pong
         self._bloom_texs = []      # 2 texture half-res (GL_RGB16F)
         self._bloom_size = None    # (w, h) half-res; None = non ancora creati
+        self._bloom_unsupported = False  # True se il driver rifiuta l'FBO RGB16F: non ritentare
         self._strip_program = None
         self._strip_vao = None
         self._strip_vbo = None
@@ -950,8 +956,9 @@ class EqualizerOpenGLThread(threading.Thread):
         glUniform1i(self._strip_uniforms["uColorMode"], int(self._color_mode))
         glUniform3f(self._strip_uniforms["uColorA"], *self._color_a)
         glUniform3f(self._strip_uniforms["uColorB"], *self._color_b)
-        glUniform1f(self._strip_uniforms["uGreenSplit"], self._green_split)
-        glUniform1f(self._strip_uniforms["uYellowSplit"], self._yellow_split)
+        g_split, y_split = effective_splits(self._green_split, self._yellow_split)
+        glUniform1f(self._strip_uniforms["uGreenSplit"], g_split)
+        glUniform1f(self._strip_uniforms["uYellowSplit"], y_split)
         glUniform1f(self._strip_uniforms["uBarsAlpha"], float(self._bars_alpha))
         # Area (Linea/Area con riempimento): alpha che sfuma verso la base → niente "muro".
         fade = 1.0 if (self._mode == MODE_LINE and self._fill) else 0.0
@@ -973,7 +980,12 @@ class EqualizerOpenGLThread(threading.Thread):
         """
         Crea (lazy) i due FBO ping-pong half-res (GL_RGB16F) per il bloom.
         Ritorna True se disponibili. Richiede dimensione framebuffer nota.
+        Su framebuffer incompleto (GL_RGB16F non è color-renderable obbligatorio
+        in GL 3.3) libera il creato e marca il bloom come non disponibile: senza
+        il flag il tentativo — e il leak — si ripeterebbe a ogni frame.
         """
+        if self._bloom_unsupported:
+            return False
         if self._bloom_size is not None:
             return True
         w = max(1, int(self._fb_width) // 2)
@@ -992,6 +1004,11 @@ class EqualizerOpenGLThread(threading.Thread):
             glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, tex, 0)
             if glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE:
                 glBindFramebuffer(GL_FRAMEBUFFER, 0)
+                all_fbos, all_texs = fbos + [fbo], texs + [tex]
+                glDeleteFramebuffers(len(all_fbos), all_fbos)
+                glDeleteTextures(len(all_texs), all_texs)
+                self._bloom_unsupported = True
+                print("[GL] Bloom non disponibile: framebuffer RGB16F incompleto")
                 return False
             fbos.append(fbo)
             texs.append(tex)
@@ -1006,8 +1023,9 @@ class EqualizerOpenGLThread(threading.Thread):
         glUseProgram(self._bars_program)
         glUniform1f(self._bars_uniforms["uNumBars"], float(num_bars))
         glUniform1f(self._bars_uniforms["uBarWidthFrac"], float(self._bar_width_frac))
-        glUniform1f(self._bars_uniforms["uGreenSplit"], self._green_split)
-        glUniform1f(self._bars_uniforms["uYellowSplit"], self._yellow_split)
+        g_split, y_split = effective_splits(self._green_split, self._yellow_split)
+        glUniform1f(self._bars_uniforms["uGreenSplit"], g_split)
+        glUniform1f(self._bars_uniforms["uYellowSplit"], y_split)
         glUniform1f(self._bars_uniforms["uBarsAlpha"], float(self._bars_alpha))
         glUniform1i(self._bars_uniforms["uColorMode"], int(self._color_mode))
         glUniform3f(self._bars_uniforms["uColorA"], *self._color_a)
@@ -1323,14 +1341,13 @@ class EqualizerOpenGLThread(threading.Thread):
             self._color_b = tuple(message['value'])
 
         elif message_type == 'set_green_split':
-            # green_split è la soglia inferiore: clamp [0,1] e <= yellow_split.
-            v = min(max(float(message['value']), 0.0), 1.0)
-            self._green_split = min(v, self._yellow_split)
+            # Valore raw (solo clamp [0,1]): il vincolo green <= yellow è
+            # applicato all'uso (effective_splits), così l'ordine dei
+            # messaggi è irrilevante.
+            self._green_split = min(max(float(message['value']), 0.0), 1.0)
 
         elif message_type == 'set_yellow_split':
-            # yellow_split è la soglia superiore: clamp [0,1] e >= green_split.
-            v = min(max(float(message['value']), 0.0), 1.0)
-            self._yellow_split = max(v, self._green_split)
+            self._yellow_split = min(max(float(message['value']), 0.0), 1.0)
 
         elif message_type == 'set_bar_width':
             self._bar_width_frac = float(message['value'])
@@ -1534,10 +1551,6 @@ class EqualizerOpenGLThread(threading.Thread):
             # Posizionala esattamente sul monitor scelto così lo copre tutto.
             glfw.set_window_pos(window, monitor_x, monitor_y)
 
-            # check if the stop event is set
-            if self.stop_event.is_set():
-                self.stop_event.clear()
-
             glfw.make_context_current(window)
             gl_version = glGetString(GL_VERSION)
             print(f"OpenGL version: {gl_version.decode() if gl_version else '?'}")
@@ -1584,6 +1597,7 @@ class EqualizerOpenGLThread(threading.Thread):
             glfw.set_mouse_button_callback(window, impl.mouse_button_callback)
             glfw.set_scroll_callback(window, impl.scroll_callback)
             glfw.set_window_size_callback(window, impl.resize_callback)
+            glfw.set_framebuffer_size_callback(window, self._on_framebuffer_size)
             # Menù chiuso all'avvio → cursore nascosto (visualizzazione pulita).
             glfw.set_input_mode(window, glfw.CURSOR, glfw.CURSOR_HIDDEN)
 
@@ -1614,7 +1628,15 @@ class EqualizerOpenGLThread(threading.Thread):
                 # Process messages from the control queue
                 while not self._control_queue.empty():
                     message = self._control_queue.get(block=False)
-                    self.process_control_message(message)
+                    try:
+                        self.process_control_message(message)
+                    except Exception as exc:
+                        # Un messaggio malformato (es. set_image con immagine
+                        # corrotta: PIL decodifica lazy e il file esplode QUI,
+                        # non alla Image.open della GUI) non deve uccidere il
+                        # renderer: scarta il messaggio e continua.
+                        mtype = message.get('type') if isinstance(message, dict) else repr(message)
+                        print(f"Errore nel messaggio di controllo {mtype}: {exc}")
 
                 # 1) Svuota TUTTA la coda audio nel ring buffer: tenendo solo gli ultimi
                 #    N_FFT frame, analizziamo sempre l'audio più recente (niente backlog).
@@ -1677,11 +1699,7 @@ class EqualizerOpenGLThread(threading.Thread):
                     if report:
                         print(report)
         except Exception as exc:
-            # Errore non gestito: notifica la GUI affinché ripristini lo stato
-            # (equalizer_opengl_thread = None) invece di lasciare un thread morto.
             print(f"OpenGL thread error: {exc}")
-            if self.window_close_callback:
-                self.window_close_callback()
         finally:
             # Ferma il decoder video e il subprocess ffmpeg prima di liberare il GL.
             self._stop_video()
@@ -1694,6 +1712,11 @@ class EqualizerOpenGLThread(threading.Thread):
             if window is not None:
                 glfw.destroy_window(window)
             glfw.terminate()
+            # Notifica UNICA alla GUI, a teardown completato: ogni percorso di
+            # uscita (ESC, Alt-F4, stop da GUI, eccezione) converge qui. Copre
+            # anche la chiusura dal window manager, che prima moriva in silenzio.
+            if self.window_close_callback:
+                self.window_close_callback()
 
     def stop(self):
         """
@@ -1714,6 +1737,14 @@ class EqualizerOpenGLThread(threading.Thread):
         if action != glfw.PRESS:
             return
 
+        # Se ImGui sta usando la tastiera per un campo di testo (es. Ctrl+click
+        # su uno slider del menù), toggle ed ESC appartengono a lui: gestirli
+        # qui chiuderebbe il menù a metà editing. (want_text_input e non
+        # want_capture_keyboard: il secondo è vero ogni volta che il menù è
+        # sotto il mouse e renderebbe impossibile chiuderlo col toggle.)
+        if self._imgui_overlay is not None and imgui.get_io().want_text_input:
+            return
+
         # Tasto-toggle configurabile: apre/chiude il menù.
         if key == self._menu_toggle_glfw_key and self._imgui_overlay is not None:
             self._imgui_overlay.toggle()
@@ -1727,16 +1758,38 @@ class EqualizerOpenGLThread(threading.Thread):
                 self._apply_cursor_mode(window)
                 return
             # Menù chiuso → comportamento storico: esci dal fullscreen.
+            # La notifica alla GUI parte dal finally di run(), a teardown
+            # completato: un riavvio non può sovrapporsi a init/terminate GLFW.
             glfw.set_window_should_close(window, True)
             self.stop()
-            if self.window_close_callback:
-                self.window_close_callback()
 
     def _apply_cursor_mode(self, window):
         """Cursore visibile col menù aperto, nascosto col menù chiuso."""
         is_open = self._imgui_overlay is not None and self._imgui_overlay.is_open()
         mode = glfw.CURSOR_NORMAL if is_open else glfw.CURSOR_HIDDEN
         glfw.set_input_mode(window, glfw.CURSOR, mode)
+
+    def _on_framebuffer_size(self, window, width, height):
+        """Callback GLFW (gira sul thread GL durante poll_events): tiene
+        viewport e FBO del bloom allineati alla dimensione reale del
+        framebuffer (cambio risoluzione/scala DPI a runtime)."""
+        if width <= 0 or height <= 0:
+            return  # finestra minimizzata: non toccare nulla
+        self._fb_width, self._fb_height = width, height
+        glViewport(0, 0, width, height)
+        self._invalidate_bloom_fbos()
+
+    def _invalidate_bloom_fbos(self) -> None:
+        """Libera i FBO bloom (se esistono): verranno ricreati lazy alla
+        nuova dimensione dal prossimo _ensure_bloom_fbos."""
+        if self._bloom_size is None:
+            return
+        try:
+            glDeleteFramebuffers(len(self._bloom_fbos), self._bloom_fbos)
+            glDeleteTextures(len(self._bloom_texs), self._bloom_texs)
+        except Exception:
+            pass
+        self._bloom_fbos, self._bloom_texs, self._bloom_size = [], [], None
 
     def load_texture(self):
         """
@@ -1834,8 +1887,9 @@ class EqualizerOpenGLThread(threading.Thread):
             return
 
         # fps letto live dal thread decoder (default finché i metadati non sono pronti).
-        if self._video_thread is not None and self._video_thread.fps > 0:
-            self._video_frame_interval = 1.0 / self._video_thread.fps
+        fps = sanitize_fps(self._video_thread.fps) if self._video_thread is not None else None
+        if fps is not None:
+            self._video_frame_interval = 1.0 / fps
 
         self._video_time_acc += frame_delta
         if self._video_time_acc < self._video_frame_interval:
