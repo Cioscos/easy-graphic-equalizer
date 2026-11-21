@@ -73,6 +73,21 @@ jobs:
           uv pip install pyinstaller
           uv run --no-sync pyinstaller --noconfirm sound-wave.spec
 
+      - name: Verify bundle contents
+        # Fail the build if runtime data files read at import time are missing
+        # (the bundle is never executed in CI, so this is the only guard). A
+        # missing soundcard header broke the 2.7.1 Linux build (issue #37).
+        shell: bash
+        run: |
+          missing=0
+          for f in soundcard/pulseaudio.py.h soundcard/mediafoundation.py.h soundcard/coreaudio.py.h; do
+            if [ ! -f "dist/sound wave/_internal/$f" ]; then
+              echo "::error::missing from bundle: _internal/$f"
+              missing=1
+            fi
+          done
+          exit $missing
+
       - name: Package bundle (Linux)
         if: runner.os == 'Linux'
         run: |
