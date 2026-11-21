@@ -26,7 +26,7 @@
 import os
 import sys
 
-from PyInstaller.utils.hooks import collect_all, copy_metadata
+from PyInstaller.utils.hooks import collect_all, collect_data_files, copy_metadata
 
 datas = []
 binaries = []
@@ -48,6 +48,14 @@ for _pkg in ('qdarktheme', 'imageio_ffmpeg', 'glfw', 'imgui_bundle'):
     datas += _d
     binaries += _b
     hiddenimports += _h
+
+# soundcard reads its CFFI header (<backend>.py.h: pulseaudio / mediafoundation /
+# coreaudio) from next to its own module at import time; without it `import
+# soundcard` dies with FileNotFoundError (issue #37). The package ships its own
+# PyInstaller hook for this, but it silently collected nothing on the Linux CI
+# runner, so collect the data files explicitly. Data files only — NOT collect_all,
+# which would import the other OSes' backends during analysis.
+datas += collect_data_files('soundcard')
 
 # imageio reads its own version via importlib.metadata at import time, so its
 # package metadata (.dist-info) must be bundled or it raises PackageNotFoundError
